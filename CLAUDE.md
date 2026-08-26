@@ -446,6 +446,14 @@ xcodebuild -project Typeo/Typeo.xcodeproj \
   has never seen it, because there is no file to go missing. Ids are namespaced
   `builtin:` so the store can tell them from a picked photo.
 
+### Canvas overlays
+- Anything drawn OVER the canvas belongs inside `CanvasStage`, sized in REFERENCE points
+  and multiplied by `displayScale` — the same rule the canvas itself follows. The empty
+  hint was a sibling in the editor's ZStack, so it kept a fixed size and stayed centred
+  in the whole area while the canvas shrank under a sheet or changed aspect. Its scale
+  is floored, because 16:9 shrinks the canvas far enough that a strictly proportional
+  instruction stops being readable.
+
 ### Effect controls
 - `EffectControl` carries its own RANGE, so an individual slider can be bipolar (lens
   distortion: barrel one way, pincushion the other) while the rest stay 0...1. Bipolar

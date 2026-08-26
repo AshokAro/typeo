@@ -93,6 +93,7 @@ struct EditorView: View {
                         interaction: interaction,
                         interactionAmount: currentAmount,
                         collisions: collisionsOn,
+                        showsEmptyHint: store.composition.isEmpty,
                         availableSize: CGSize(
                             width: proxy.size.width,
                             height: proxy.size.height * canvasHeightFactor
@@ -100,9 +101,6 @@ struct EditorView: View {
                     )
                     .frame(maxHeight: .infinity, alignment: isSheetOpen ? .top : .center)
                     .animation(.snappy(duration: 0.25), value: canvasHeightFactor)
-                    if store.composition.isEmpty {
-                        emptyHint
-                    }
                     if recording.isBusy {
                         recordingOverlay
                     }
@@ -469,15 +467,6 @@ struct EditorView: View {
     private func letterCount(for amount: Double) -> Int {
         guard glyphCount > 0, amount > 0 else { return 0 }
         return max(1, Int((Double(glyphCount) * amount).rounded()))
-    }
-
-    private var emptyHint: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "character.cursor.ibeam").font(.system(size: 26, weight: .light))
-            Text("Tap the canvas to type").font(.system(size: 15, weight: .medium))
-        }
-        .foregroundStyle(.white.opacity(0.35))
-        .allowsHitTesting(false)
     }
 
     private var currentFontName: String {
