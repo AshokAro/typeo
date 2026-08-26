@@ -59,7 +59,6 @@ final class GlyphScene: SKScene {
         super.init(size: size)
         scaleMode = .aspectFill
         anchorPoint = .zero
-        physicsWorld.gravity = .zero
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -172,27 +171,94 @@ final class GlyphScene: SKScene {
         effectNode.shouldEnableEffects = true
     }
 
-    // MARK: - Physics setup
+    // MARK: - Motion
+    //
+    // Motion is integrated by hand rather than with SKPhysicsBody.
+    //
+    // SKRenderer, which the offscreen video exporter uses, does NOT step the scene
+    // once per render call — measured at 2 scene updates across 60 renders — so
+    // SpriteKit's own simulation barely advances during a recording while it runs
+    // normally in a live SKView. That would make a recorded drop differ from the drop
+    // on screen. Integrating here, driven by an explicit `advance(to:)`, keeps the
+    // live canvas and the exported video identical, which is the whole point.
 
-    private func enablePhysics(_ enabled: Bool) {
-        if enabled {
-            physicsWorld.gravity = CGVector(dx: 0, dy: -9.8)
-            physicsBody = SKPhysicsBody(edgeLoopFrom: CGRect(origin: .zero, size: size))
-            for node in glyphNodes.values where node.physicsBody == nil {
-                let body = SKPhysicsBody(rectangleOf: node.size,
-                                         center: CGPoint(x: node.size.width / 2, y: 0))
-                body.restitution = 0.35
-                body.friction = 0.6
-                body.linearDamping = 0.2
-                body.angularDamping = 0.4
-                body.allowsRotation = true
-                node.physicsBody = body
+    private struct Motion {
+        var velocity: CGFloat = 0
+        var spin: CGFloat = 0
+    }
+
+    private var motion: [UUID: Motion] = [:]
+    private var interactionStart: TimeInterval?
+    private var lastAdvance: TimeInterval?
+
+    /// Deterministic per-frame step. Called by the live scene's update and by the
+    /// offscreen frame renderer, so both produce the same animation.
+    func advance(to time: TimeInterval) {
+        if interactionStart == nil { interactionStart = time }
+        let elapsed = time - (interactionStart ?? time)
+        let delta = min(1.0 / 20.0, max(0, time - (lastAdvance ?? time)))
+        lastAdvance = time
+
+        switch interaction {
+        case .none:
+            break
+
+        case .inflate:
+            guard isHolding, let touch = touchPoint else { break }
+            let reach = size.width * 0.35
+            for node in glyphNodes.values {
+                let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
+                let distance = hypot(centre.x - touch.x, centre.y - touch.y)
+                let influence = max(0, 1 - distance / reach)
+                let target = 1 + influence * 1.6
+                let rate = min(1, delta * 8)
+                node.setScale(node.xScale + (target - node.xScale) * rate)
             }
-        } else {
-            physicsWorld.gravity = .zero
-            physicsBody = nil
-            for node in glyphNodes.values { node.physicsBody = nil }
+
+        case .float:
+            guard isHolding else { break }
+            for (id, node) in glyphNodes {
+                guard let rest = restPositions[id] else { continue }
+                let seed = seedValue(for: id)
+                let drift = sin(elapsed * 1.6 + seed * 6.28) * 16
+                let rise = min(size.height * 0.24, elapsed * size.height * 0.14)
+                node.position = CGPoint(x: rest.x + drift, y: rest.y + rise)
+                node.zRotation = CGFloat(sin(elapsed * 1.1 + seed * 6.28) * 0.12)
+            }
+
+        case .gravity:
+            guard delta > 0 else { break }
+            let gravity = -size.height * 2.4          // points per second squared
+            let bounce: CGFloat = 0.32
+            for (id, node) in glyphNodes {
+                var state = motion[id] ?? Motion(velocity: 0, spin: (seedValue(for: id) - 0.5) * 3.2)
+                state.velocity += gravity * delta
+                node.position.y += state.velocity * delta
+                node.zRotation += state.spin * delta
+
+                let floor = node.size.height / 2
+                if node.position.y <= floor {
+                    node.position.y = floor
+                    state.velocity = -state.velocity * bounce
+                    state.spin *= 0.45
+                    if abs(state.velocity) < size.height * 0.06 {
+                        state.velocity = 0
+                        state.spin = 0
+                    }
+                }
+                motion[id] = state
+            }
         }
+    }
+
+    private func seedValue(for id: UUID) -> CGFloat {
+        CGFloat(abs(id.uuidString.hashValue % 1000)) / 1000
+    }
+
+    private func resetMotion() {
+        motion.removeAll()
+        interactionStart = nil
+        lastAdvance = nil
     }
 
     // MARK: - Touch
@@ -201,7 +267,7 @@ final class GlyphScene: SKScene {
         guard let point = touches.first?.location(in: self) else { return }
         touchPoint = point
         isHolding = true
-        if interaction == .gravity { enablePhysics(true) }
+        resetMotion()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -229,9 +295,9 @@ final class GlyphScene: SKScene {
         }
     }
 
-    /// Restores every glyph to its laid-out position and clears physics.
+    /// Restores every glyph to its laid-out position and clears any motion.
     func reset() {
-        enablePhysics(false)
+        resetMotion()
         for (id, node) in glyphNodes {
             guard let rest = restPositions[id] else { continue }
             node.removeAllActions()
@@ -246,35 +312,16 @@ final class GlyphScene: SKScene {
     // MARK: - Per-frame
 
     override func update(_ currentTime: TimeInterval) {
-        switch interaction {
-        case .none:
-            break
+        advance(to: currentTime)
+    }
 
-        case .inflate:
-            guard isHolding, let touch = touchPoint else { break }
-            let reach = size.width * 0.35
-            for node in glyphNodes.values {
-                let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
-                let distance = hypot(centre.x - touch.x, centre.y - touch.y)
-                let influence = max(0, 1 - distance / reach)
-                let target = 1 + influence * 1.6
-                node.setScale(node.xScale + (target - node.xScale) * 0.25)
-            }
-
-        case .float:
-            guard isHolding else { break }
-            for (id, node) in glyphNodes {
-                guard let rest = restPositions[id] else { continue }
-                let seed = CGFloat(abs(id.hashValue % 1000)) / 1000
-                let drift = sin(currentTime * 1.6 + seed * 6.28) * 14
-                let rise = min(size.height * 0.22, (node.position.y - rest.y) + 2.4)
-                node.position = CGPoint(x: rest.x + drift, y: rest.y + rise)
-                node.zRotation = sin(currentTime * 1.1 + seed * 6.28) * 0.12
-            }
-
-        case .gravity:
-            break   // SKPhysicsBody drives it
-        }
+    /// Starts the current interaction without a touch, so an offscreen recording can
+    /// drive it. v4 uses this to capture a drop or a float.
+    func beginAutomaticInteraction() {
+        guard interaction != .none else { return }
+        resetMotion()
+        isHolding = true
+        touchPoint = CGPoint(x: size.width / 2, y: size.height / 2)
     }
 
     // MARK: - Writing back to the model

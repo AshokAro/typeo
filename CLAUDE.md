@@ -53,8 +53,8 @@ only what happens in between.
 - **v3** (DONE): canvas rebuilt as individually addressable SpriteKit glyph nodes.
   Per-letter jumbling. Tap-and-hold: inflate, float, gravity/drop.
   EXCLUDED: video, widget.
-- **v4**: offscreen frame-by-frame render of v3 animations + `AVAssetWriter` encoding.
-  EXCLUDED: widget. First candidate to cut if time runs short.
+- **v4** (DONE): offscreen frame-by-frame render of v3 animations + `AVAssetWriter`
+  encoding, saved to Photos or shared. EXCLUDED: widget.
 - **v5**: WidgetKit extension showing a finished, already-exported composition on a
   timeline. Widgets CANNOT run the live shader/physics canvas. Scope small.
 
@@ -105,6 +105,24 @@ only what happens in between.
   `SpriteShaders.swift`; `u_texel` (1/textureSize) is supplied so offsets stay in pixels.
 - The global shader lives on an `SKEffectNode` wrapping the glyph nodes, with a clear
   canvas-sized sprite inside it so a glow or tear is not clipped at the block's edge.
+- `SKRenderer.update(atTime:)` advances the SHADER clock but does NOT reliably step the
+  scene — measured at 2 scene updates across 60 render calls. SpriteKit's own physics
+  therefore barely moves during an offscreen recording while running normally in a live
+  SKView, which would make a recorded drop differ from the drop on screen. Motion is
+  integrated by hand in `GlyphScene.advance(to:)`, called by BOTH the live scene's
+  update and the offscreen frame renderer. Do not reintroduce `SKPhysicsBody` for
+  anything that has to appear in an export.
+
+## v4 video notes
+
+- `CompositionFrameRenderer` holds ONE scene, SKRenderer and Metal objects for a whole
+  recording and just advances the clock. Building a fresh scene per frame (what the
+  still exporter does) would restart the animation every frame.
+- Frames render straight into CVPixelBuffer-backed Metal textures via
+  `CVMetalTextureCache`, so `AVAssetWriter` consumes them with no CPU copy.
+- H.264 requires even pixel dimensions — the frame renderer rounds to even.
+- Video renders at scale 1 (1080 wide). Scale 2 doubles encode time for no visible gain
+  on a phone.
 - Export renders via `ImageRenderer` (SwiftUI) at the target aspect ratio and scale.
 - Photos save requires `NSPhotoLibraryAddUsageDescription` in Info.plist.
 - Bundled fonts must be OFL/licence-checked and declared in Info.plist under

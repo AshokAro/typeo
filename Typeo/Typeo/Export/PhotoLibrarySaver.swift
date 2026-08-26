@@ -17,6 +17,20 @@ enum PhotoSaveOutcome: Equatable {
 
 enum PhotoLibrarySaver {
 
+    static func saveVideo(at url: URL) async -> PhotoSaveOutcome {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else { return .permissionDenied }
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.forAsset()
+                    .addResource(with: .video, fileURL: url, options: nil)
+            }
+            return .saved
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
     static func save(_ image: UIImage) async -> PhotoSaveOutcome {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {

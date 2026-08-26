@@ -20,6 +20,7 @@ struct EditorView: View {
     @State private var isExporting = false
     @State private var didSave = false
     @State private var interaction: GlyphInteraction = .none
+    @State private var isRecordingSheetUp = false
     @State private var scene = GlyphScene(
         composition: Composition(),
         size: AspectRatio.square.referenceSize
@@ -66,6 +67,9 @@ struct EditorView: View {
         }
         .sheet(isPresented: $isExporting) {
             if let exportImage { ExportSheet(image: exportImage) }
+        }
+        .sheet(isPresented: $isRecordingSheetUp) {
+            RecordSheet(composition: store.composition, interaction: interaction)
         }
     }
 
@@ -122,6 +126,16 @@ struct EditorView: View {
                 }
 
                 Spacer(minLength: 4)
+
+                Button {
+                    captureSceneTransforms()
+                    isRecordingSheetUp = true
+                } label: {
+                    Image(systemName: "video").font(.system(size: 14, weight: .semibold))
+                        .frame(width: 26, height: 24)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Record video")
 
                 Button { store.jumble() } label: {
                     Image(systemName: "shuffle").font(.system(size: 14, weight: .semibold))
