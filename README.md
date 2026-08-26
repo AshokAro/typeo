@@ -8,8 +8,9 @@ rather than a rewrite.
 
 ## Status
 
-**v1 — in progress.** Type → curated font list → colour + one Core Image filter →
-3 aspect ratios → export to Photos + share sheet.
+**v1–v4 shipped, v5 blocked on a paid developer account, v6 (an unplanned UI and shader
+overhaul) is now most of the app.** See [STATUS.md](STATUS.md) for the full ledger: what
+works today, where the experience is thin, and what to build next.
 
 ## Architecture
 
