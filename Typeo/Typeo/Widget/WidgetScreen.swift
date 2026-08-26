@@ -90,28 +90,13 @@ struct WidgetScreen: View {
             .pickerStyle(.segmented)
 
             let entry = currentEntry
-            Button {
-                showPicker = true
-            } label: {
-                WidgetCompositionView(entry: entry, image: entry.flatMap { pins.image(for: $0) })
-                    .frame(width: previewSize.dimensions.width, height: previewSize.dimensions.height)
-                    .clipShape(.rect(cornerRadius: 22))
-                    .shadow(radius: 12, y: 5)
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(7)
-                            .background(.black.opacity(0.55), in: .circle)
-                            .foregroundStyle(.white)
-                            .padding(8)
-                    }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Choose what the widget shows")
-
-            Text("Tap the widget to choose what it cycles through")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            // NOT a button. Wrapping the preview in one gave it a hit area the size of
+            // the aspect-filled image, which overflows the frame and covered the size
+            // picker above — so choosing Large opened the composition sheet instead.
+            WidgetCompositionView(entry: entry, image: entry.flatMap { pins.image(for: $0) })
+                .frame(width: previewSize.dimensions.width, height: previewSize.dimensions.height)
+                .clipShape(.rect(cornerRadius: 22))
+                .shadow(radius: 12, y: 5)
 
             if pins.entries.count > 1 {
                 HStack(spacing: 12) {
@@ -131,6 +116,17 @@ struct WidgetScreen: View {
                 }
                 .buttonStyle(.glass)
             }
+
+            Button {
+                showPicker = true
+            } label: {
+                Label("Choose compositions", systemImage: "square.grid.2x2")
+                    .font(.system(size: 14, weight: .medium))
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 14)
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("Choose what the widget shows")
         }
         .frame(maxWidth: .infinity)
         .padding(16)
@@ -182,7 +178,7 @@ struct WidgetScreen: View {
             }
 
             if pins.entries.isEmpty {
-                Text("Nothing chosen yet. Tap the widget preview above to pick compositions.")
+                Text("Nothing chosen yet. Use Choose compositions above to pick some.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

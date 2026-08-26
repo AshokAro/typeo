@@ -60,10 +60,16 @@ struct FillControls: View {
     /// A photo is a BACKGROUND fill only — the text keeps solid and gradient.
     private enum Mode: Hashable { case solid, gradient, image }
 
-    private var mode: Mode {
+    private var storedMode: Mode {
         if imageID != nil { return .image }
         return currentGradient != nil ? .gradient : .solid
     }
+
+    /// The tab the user is LOOKING at. Deriving it from the model alone meant the Photo
+    /// tab could never be opened: there was no image yet, so the segment snapped
+    /// straight back to Solid and the picker was unreachable.
+    @State private var browsing: Mode?
+    private var mode: Mode { browsing ?? storedMode }
 
     @State private var photo: PhotosPickerItem?
 
@@ -72,10 +78,11 @@ struct FillControls: View {
             Picker("Fill", selection: Binding(
                 get: { mode },
                 set: { newMode in
+                    browsing = newMode
                     switch newMode {
                     case .solid:    applySolid()
                     case .gradient: applyGradient(currentGradient ?? .sunset)
-                    case .image:    break   // the picker below chooses the photo
+                    case .image:    break   // the panel below chooses the photo
                     }
                 }
             )) {
@@ -97,12 +104,51 @@ struct FillControls: View {
             case .solid:
                 swatchGrid
                 ColorWell(title: "Custom", color: colorBinding)
-                if target == .background { photoPicker(label: "Use a photo") }
             case .image:
+                builtInGrid
                 photoRow
-                photoPicker(label: "Replace photo")
+                photoPicker(label: imageID == nil ? "Choose from library" : "Replace photo")
             }
         }
+        .onChange(of: storedMode) { _, new in
+            // A preset (or undo) changed the fill underneath: follow it rather than
+            // showing a tab that no longer matches what is on the canvas.
+            if new != mode { browsing = nil }
+        }
+    }
+
+    private var builtInGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+            ForEach(BuiltInBackgrounds.all) { item in
+                Button {
+                    store.setBackground(.image(id: item.id))
+                    browsing = .image
+                } label: {
+                    VStack(spacing: 4) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.4))
+                            if let preview = BackgroundImageStore.image(for: item.id) {
+                                Image(uiImage: preview)
+                                    .resizable()
+                                    .scaledToFill()
+                            }
+                        }
+                        .frame(height: 52)
+                        .clipShape(.rect(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(imageID == item.id ? Color.accentColor : Color.primary.opacity(0.15),
+                                        lineWidth: imageID == item.id ? 2.5 : 1)
+                        )
+                        Text(item.name)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func photoPicker(label: String) -> some View {
@@ -115,6 +161,7 @@ struct FillControls: View {
                 guard let data = try? await item.loadTransferable(type: Data.self),
                       let image = UIImage(data: data) else { return }
                 store.setBackgroundImage(image)
+                browsing = .image
                 photo = nil
             }
         }
@@ -122,7 +169,8 @@ struct FillControls: View {
 
     @ViewBuilder
     private var photoRow: some View {
-        if let id = imageID, let image = BackgroundImageStore.image(for: id) {
+        if let id = imageID, !BuiltInBackgrounds.isBuiltIn(id),
+           let image = BackgroundImageStore.image(for: id) {
             HStack(spacing: 12) {
                 Image(uiImage: image)
                     .resizable()

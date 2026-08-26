@@ -39,6 +39,13 @@ enum BackgroundImageStore {
 
     static func image(for id: String) -> UIImage? {
         if let cached = images[id] { return cached }
+        // A built-in is DRAWN, not read: it has no file, so a composition using one
+        // still opens on a device that has never seen it.
+        if BuiltInBackgrounds.isBuiltIn(id) {
+            guard let image = BuiltInBackgrounds.image(for: id) else { return nil }
+            images[id] = image
+            return image
+        }
         guard let image = UIImage(contentsOfFile: url(for: id).path) else { return nil }
         images[id] = image
         return image

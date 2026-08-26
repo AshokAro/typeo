@@ -96,11 +96,7 @@ struct StylePanel: View {
                         // Built from the kind's own control list, so an effect that
                         // needs three knobs gets three.
                         ForEach(activeEffect.controls) { control in
-                            sliderRow(
-                                title: control.label,
-                                value: value(for: control),
-                                binding: binding(for: control)
-                            )
+                            effectSlider(control)
                         }
 
                         if let variants = activeEffect.variants {
@@ -153,17 +149,28 @@ struct StylePanel: View {
         }
     }
 
-    private func sliderRow(title: String, value: Double, binding: Binding<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    /// Each control carries its own range, so a bipolar one gets the snapping slider
+    /// and a signed readout rather than being forced into 0...1.
+    private func effectSlider(_ control: EffectControl) -> some View {
+        let current = value(for: control)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(title)
+                Text(control.label)
                 Spacer()
-                Text(value, format: .percent.precision(.fractionLength(0)))
+                Text(readout(current, bipolar: control.isBipolar))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            Slider(value: binding, in: 0...1)
+            SnappingSlider(value: binding(for: control), range: control.range)
         }
+    }
+
+    private func readout(_ value: Double, bipolar: Bool) -> String {
+        let percent = Int((value * 100).rounded())
+        guard bipolar else { return "\(percent)%" }
+        if percent > 0 { return "+\(percent)%" }
+        if percent < 0 { return "\(percent)%" }
+        return "0%"
     }
 
     private var presetStrip: some View {

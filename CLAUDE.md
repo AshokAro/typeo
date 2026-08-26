@@ -416,3 +416,48 @@ xcodebuild -project Typeo/Typeo.xcodeproj \
 - `.buttonStyle(.glass)` carries ~23pt of fixed padding per pill and IGNORES
   `controlSize`, so the icon frame is the only lever on how many controls fit a row.
   Nine fit at 17pt with a spacer instead of a divider. A tenth has to live elsewhere.
+
+## v6 recording, photo and shader-control notes (current)
+
+### Recording
+- Recording is a 3-2-1 count-in and then an OPEN take the user ends with a Stop button
+  in the recording pill. A fixed length meant composing the whole performance before
+  pressing the button. The take is capped at 60s because the export renders a frame at
+  a time.
+- The countdown numeral is backed by a dark circle: it sits ON the artwork, and a bare
+  numeral disappears into whatever is already there.
+- The recording pill must NOT be inside an `allowsHitTesting(false)` overlay any more —
+  it now carries the control that ends the take.
+
+### Hit testing
+- `.clipped()` stops a fill-scaled image DRAWING outside its frame but not HIT-TESTING
+  outside it. The widget preview was wrapped in a button, so with a composition pinned
+  that button had an invisible hit area the size of the overflowing image, covering the
+  size picker above it — which is why Large could not be chosen once something was
+  pinned. `.contentShape(.rect)` bounds it; the preview is no longer a button at all.
+
+### Photo backgrounds
+- A segmented fill mode derived PURELY from the model can contain a state the model
+  cannot yet express. The Photo tab could never be opened: there was no image, so the
+  segment snapped back to Solid and the picker was unreachable. The panel now tracks
+  the tab being BROWSED separately, and follows the model when a preset changes it.
+- `BuiltInBackgrounds` draws its six photos rather than bundling them: no asset weight,
+  no licence to check, and a composition saved with one still opens on a device that
+  has never seen it, because there is no file to go missing. Ids are namespaced
+  `builtin:` so the store can tell them from a picked photo.
+
+### Effect controls
+- `EffectControl` carries its own RANGE, so an individual slider can be bipolar (lens
+  distortion: barrel one way, pincushion the other) while the rest stay 0...1. Bipolar
+  effect sliders get the same snapping and centre tick as the interaction ones.
+- Halftone: the dots are a metaball field, which is what lets a Gooey control merge
+  them. Two things had to be right — the falloff must be FOURTH power (with a square
+  falloff eight neighbours alone exceed the threshold and every cell reads as solid
+  ink), and the source must be SHADED first, because a halftone of uniform white is
+  solid white. Same family as the dither and the luminance LUT.
+- Lens distortion: only a pincushion samples outside the texture, so only that
+  direction is normalised back onto the corner. Normalising both ways magnified the
+  barrel until the picture was a stamp in a black field.
+- Fluted glass treats each rib as a cylindrical lens with a specular crown and a dark
+  seam. It is a BACKGROUND effect in spirit — it needs something behind it worth
+  bending.

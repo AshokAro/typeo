@@ -30,6 +30,10 @@ struct WidgetCompositionView: View {
             }
         }
         .clipped()
+        // `.clipped()` stops the fill-scaled image DRAWING outside the frame but not
+        // HIT-TESTING outside it. Without this, embedding the preview in a button gave
+        // that button an invisible hit area the size of the overflowing image.
+        .contentShape(.rect)
         .accessibilityLabel(accessibilityText)
     }
 

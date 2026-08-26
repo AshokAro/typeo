@@ -190,6 +190,7 @@ struct ShaderEffect: Codable, Hashable {
         // v6
         case chrome, glass, matrix, liquify, halftone, motionBlur, thermal
         case neon, gemSmoke, meshGradient, grainGradient, dithering
+        case flutedGlass, lensDistort
 
         var id: String { rawValue }
 
@@ -218,6 +219,8 @@ struct ShaderEffect: Codable, Hashable {
             case .meshGradient:  "Mesh"
             case .grainGradient: "Grain"
             case .dithering:     "Dither"
+            case .flutedGlass:   "Fluted Glass"
+            case .lensDistort:   "Lens"
             }
         }
 
@@ -229,6 +232,8 @@ struct ShaderEffect: Codable, Hashable {
             case .heat, .noise, .glitch, .chrome, .matrix, .liquify,
                  .gemSmoke, .meshGradient, .grainGradient:
                 true
+            case .flutedGlass, .lensDistort:
+                false
             }
         }
 
@@ -253,6 +258,8 @@ struct ShaderEffect: Codable, Hashable {
             case .meshGradient:  0
             case .grainGradient: 0
             case .dithering:     0
+            case .flutedGlass:   90
+            case .lensDistort:   120
             }
         }
     }
@@ -281,7 +288,8 @@ struct ShaderEffect: Codable, Hashable {
                            .init(.tertiary, "Density")]
         case .liquify:    [.init(.intensity, "Amount"), .init(.secondary, "Scale"),
                            .init(.tertiary, "Speed")]
-        case .halftone:   [.init(.intensity, "Amount"), .init(.secondary, "Dot size")]
+        case .halftone:   [.init(.intensity, "Amount"), .init(.secondary, "Dot size"),
+                           .init(.tertiary, "Gooey")]
         case .motionBlur: [.init(.intensity, "Length"), .init(.secondary, "Angle")]
         case .thermal:    [.init(.intensity, "Heat"), .init(.secondary, "Spread")]
         case .neon:       [.init(.intensity, "Glow"), .init(.secondary, "Hue"),
@@ -291,8 +299,12 @@ struct ShaderEffect: Codable, Hashable {
                               .init(.tertiary, "Drift")]
         case .grainGradient: [.init(.intensity, "Amount"), .init(.secondary, "Grain"),
                               .init(.tertiary, "Scale")]
-        case .dithering:     [.init(.intensity, "Amount"), .init(.secondary, "Levels"),
+        case .dithering:     [.init(.intensity, "Amount"), .init(.secondary, "Colour steps"),
                               .init(.tertiary, "Scale")]
+        case .flutedGlass:   [.init(.intensity, "Refraction"), .init(.secondary, "Flute width"),
+                              .init(.tertiary, "Angle")]
+        case .lensDistort:   [.init(.intensity, "Distort", range: -1...1),
+                              .init(.secondary, "Zoom"), .init(.tertiary, "Fringing")]
         }
     }
 
@@ -305,6 +317,8 @@ struct ShaderEffect: Codable, Hashable {
             // Shapes are generated, not enumerated: the dice reseeds where the colour
             // centres sit, which is the only thing that was fixed about the mesh.
             EffectVariants(label: "Shape", count: 24, isRandomised: true)
+        case .dithering:
+            EffectVariants(label: "Pattern", names: ["Bayer 4", "Bayer 8", "Noise"])
         default:
             nil
         }
@@ -317,12 +331,17 @@ struct EffectControl: Identifiable, Hashable {
 
     var slot: Slot
     var label: String
+    /// Bipolar controls rest at 0 and do nothing there, exactly like the interaction
+    /// sliders. A lens is the obvious case: barrel one way, pincushion the other.
+    var range: ClosedRange<Double>
 
-    init(_ slot: Slot, _ label: String) {
+    init(_ slot: Slot, _ label: String, range: ClosedRange<Double> = 0...1) {
         self.slot = slot
         self.label = label
+        self.range = range
     }
 
+    var isBipolar: Bool { range.lowerBound < 0 }
     var id: String { slot.rawValue }
 }
 

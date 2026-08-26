@@ -36,6 +36,8 @@ enum SpriteShaders {
         case .meshGradient: meshGradient
         case .grainGradient: grainGradient
         case .dithering: dithering
+        case .flutedGlass: flutedGlass
+        case .lensDistort: lensDistort
         }
 
         let shader = SKShader(source: source)
@@ -477,6 +479,9 @@ extension SpriteShaders {
     }
     """
 
+    /// Halftone with a GOOEY control: the dots are a metaball field rather than hard
+    /// circles, so raising it lets neighbouring dots merge into each other the way ink
+    /// actually behaves.
     static let halftone = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
@@ -485,13 +490,36 @@ extension SpriteShaders {
 
         vec2 p = v_tex_coord / u_texel;
         float scale = mix(26.0, 4.0, u_secondary);
-        vec2 grid = mod(p, scale) - scale * 0.5;
-        float lum = clamp(dot(rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
-        float radius = scale * 0.52 * sqrt(lum);
-        float ink = step(length(grid), radius);
+        vec2 cell = floor(p / scale);
+        // Uniform ink has nothing to screen — a halftone of solid white is solid. The
+        // amount slider shades the source so the dots have a range to describe, the
+        // same fix the dither needed.
 
-        vec3 outc = mix(rgb, rgb * ink, u_amount);
-        gl_FragColor = vec4(outc * src.a, src.a);
+
+        // Nine neighbouring dots, summed as a metaball field. One cell alone can only
+        // ever make a disc; the neighbours are what allow a merge.
+        float field = 0.0;
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                vec2 centre = (cell + vec2(float(x), float(y)) + 0.5) * scale;
+                vec4 sampled = texture2D(u_texture, centre * u_texel);
+                float lum = clamp(dot(sampled.rgb / max(sampled.a, 0.001), vec3(0.299, 0.587, 0.114))
+                                  * sampled.a, 0.0, 1.0);
+                lum *= mix(1.0, 0.12 + 0.88 * centre.y * u_texel.y, u_amount);
+                float radius = scale * 0.60 * sqrt(clamp(lum, 0.0, 1.0));
+                float distance = max(length(p - centre), 1.0);
+                // FOURTH power, not square: with a square falloff eight neighbours sum
+                // to more than the threshold on their own and every cell reads as solid
+                // ink — no dots at all.
+                float ratio = radius / distance;
+                field += ratio * ratio * ratio * ratio;
+            }
+        }
+
+        float edge = mix(0.03, 0.85, u_tertiary);
+        float ink = smoothstep(1.0 - edge, 1.0 + edge, field);
+
+        gl_FragColor = vec4(rgb * ink * src.a, src.a);
     }
     """
 
@@ -580,6 +608,66 @@ extension SpriteShaders {
     }
     """
 
+    /// Fluted glass: the ribbed panel you get in a bathroom door. Each flute is a
+    /// cylindrical lens, so what is behind it is squeezed and repeated across the ribs.
+    /// Designed for the BACKGROUND, where there is something worth bending.
+    static let flutedGlass = helpers + """
+    void main() {
+        vec2 uv = v_tex_coord;
+        float angle = u_tertiary * 3.14159265;
+        vec2 across = vec2(cos(angle), sin(angle));
+
+        float width = mix(0.20, 0.014, u_secondary);
+        float coord = dot(uv, across) / max(width, 0.001);
+        float local = fract(coord) - 0.5;
+
+        // A cylinder bends hardest at its edges and not at all down the middle.
+        float bend = local * 2.0;
+        vec2 sampled = clamp(uv - across * bend * width * u_amount * 1.7, 0.0, 1.0);
+        vec4 src = texture2D(u_texture, sampled);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        // Rib shading: a specular line down the crown, a dark seam at each join.
+        float crown = 1.0 - abs(bend);
+        float spec = pow(clamp(crown, 0.0, 1.0), 7.0) * 0.55 * u_amount;
+        float seam = smoothstep(0.36, 0.5, abs(local)) * 0.42 * u_amount;
+
+        vec3 outc = clamp(rgb * (1.0 - seam) + spec, 0.0, 1.0);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    /// Lens distortion. Bipolar: negative pincushions, positive barrels, 0 is a flat
+    /// pane. Fringing separates the channels toward the rim, like a cheap lens.
+    static let lensDistort = helpers + """
+    void main() {
+        vec2 centred = v_tex_coord - vec2(0.5);
+        float radius2 = dot(centred, centred);
+        float zoom = mix(1.35, 0.75, u_secondary);
+        // NEGATED so positive bulges (barrel) and negative pinches (pincushion), which
+        // is the way round everyone expects a distortion slider to work.
+        float k = -u_amount * 2.4;
+        // Only a PINCUSHION samples outside the texture, so only that direction needs
+        // normalising back onto the corner. Normalising both ways magnified the barrel
+        // until the picture was a stamp in the middle of a black field.
+        float cornerBend = max(1.0, 1.0 + k * 0.5);
+        float bend = (1.0 + k * radius2) / cornerBend;
+
+        vec2 base = centred * bend * zoom + vec2(0.5);
+        float fringe = u_tertiary * 0.06 * u_amount;
+        vec2 warpR = centred * (bend + fringe) * zoom + vec2(0.5);
+        vec2 warpB = centred * (bend - fringe) * zoom + vec2(0.5);
+
+        vec4 g = texture2D(u_texture, clamp(base, 0.0, 1.0));
+        float r = texture2D(u_texture, clamp(warpR, 0.0, 1.0)).r;
+        float b = texture2D(u_texture, clamp(warpB, 0.0, 1.0)).b;
+
+        // Premultiplied: alpha comes from the centre sample so the shape stays whole.
+        gl_FragColor = vec4(r, g.g, b, g.a);
+    }
+    """
+
     /// Mesh gradient: drifting colour centres blended by inverse distance. Works as a
     /// background fill and as a tint on the text, because it respects source alpha.
     static let meshGradient = helpers + """
@@ -660,7 +748,8 @@ extension SpriteShaders {
         vec3 rgb = src.rgb / a;
 
         float cellScale = mix(1.0, 5.0, u_tertiary);
-        vec2 p = floor(mod(floor(v_tex_coord / u_texel / cellScale), 4.0));
+        vec2 pixel = floor(v_tex_coord / u_texel / cellScale);
+        vec2 p = floor(mod(pixel, 4.0));
         float index = p.x + p.y * 4.0;
 
         // 4x4 Bayer matrix, unrolled: no array indexing in this GLSL subset.
@@ -673,6 +762,25 @@ extension SpriteShaders {
         m += step(abs(index - 10.0), 0.4) * 0.1250;  m += step(abs(index - 11.0), 0.4) * 0.6250;
         m += step(abs(index - 12.0), 0.4) * 1.0000;  m += step(abs(index - 13.0), 0.4) * 0.5000;
         m += step(abs(index - 14.0), 0.4) * 0.8750;  m += step(abs(index - 15.0), 0.4) * 0.3750;
+
+        // Pattern: two Bayer scales and a noise dither. Blended by weight, never
+        // branched.
+        float w8 = step(abs(u_variant - 1.0), 0.4);
+        float wNoise = step(abs(u_variant - 2.0), 0.4);
+        float coarse = m;
+        vec2 p8 = floor(mod(pixel * 0.5, 4.0));
+        float index8 = p8.x + p8.y * 4.0;
+        float m8 = 0.0;
+        m8 += step(index8, 0.5)  * 0.0625;  m8 += step(abs(index8 -  1.0), 0.4) * 0.5625;
+        m8 += step(abs(index8 -  2.0), 0.4) * 0.1875;  m8 += step(abs(index8 -  3.0), 0.4) * 0.6875;
+        m8 += step(abs(index8 -  4.0), 0.4) * 0.8125;  m8 += step(abs(index8 -  5.0), 0.4) * 0.3125;
+        m8 += step(abs(index8 -  6.0), 0.4) * 0.9375;  m8 += step(abs(index8 -  7.0), 0.4) * 0.4375;
+        m8 += step(abs(index8 -  8.0), 0.4) * 0.2500;  m8 += step(abs(index8 -  9.0), 0.4) * 0.7500;
+        m8 += step(abs(index8 - 10.0), 0.4) * 0.1250;  m8 += step(abs(index8 - 11.0), 0.4) * 0.6250;
+        m8 += step(abs(index8 - 12.0), 0.4) * 1.0000;  m8 += step(abs(index8 - 13.0), 0.4) * 0.5000;
+        m8 += step(abs(index8 - 14.0), 0.4) * 0.8750;  m8 += step(abs(index8 - 15.0), 0.4) * 0.3750;
+        float mNoise = hash21(pixel);
+        m = mix(mix(coarse, mix(coarse, m8, 1.0), w8), mNoise, wNoise);
 
         // Shade the ink before quantising. Flat white is a fixed point of any
         // quantiser — the old version ran correctly and changed nothing at all.
