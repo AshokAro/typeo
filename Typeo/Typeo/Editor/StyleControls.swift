@@ -141,7 +141,7 @@ struct FillControls: View {
                                         lineWidth: imageID == item.id ? 2.5 : 1)
                         )
                         Text(item.name)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -178,7 +178,7 @@ struct FillControls: View {
                     .frame(width: 64, height: 44)
                     .clipShape(.rect(cornerRadius: 6))
                 Text("Effects apply on top of the photo")
-                    .font(.system(size: 12))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }

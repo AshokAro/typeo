@@ -31,6 +31,9 @@ enum GlyphShapeFactory {
     }
 
     private static var cache: [Key: [GlyphCircle]] = [:]
+    /// Bounded for the same reason as the texture cache: one entry per size the slider
+    /// passes through.
+    private static let cacheLimit = 400
 
     /// Rows of cells down the glyph's height. Six is enough for a stem and a crossbar
     /// to be distinct without turning a pair test into hundreds of comparisons.
@@ -70,6 +73,7 @@ enum GlyphShapeFactory {
             ? [GlyphCircle(centre: CGPoint(x: box.width / 2, y: 0),
                            radius: min(box.width, box.height) / 2)]
             : result
+        if cache.count > cacheLimit { cache.removeAll(keepingCapacity: true) }
         cache[key] = circles
         return circles
     }

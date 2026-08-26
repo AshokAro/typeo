@@ -42,6 +42,9 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .task {
+            #if DEBUG
+            if SelfCheck.isRequested { SelfCheck.run() }
+            #endif
             try? await Task.sleep(for: .seconds(1))
             withAnimation(.easeOut(duration: 0.35)) {
                 showSplash = false

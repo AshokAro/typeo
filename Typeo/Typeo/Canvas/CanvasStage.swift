@@ -19,6 +19,10 @@ struct CanvasStage: View {
     /// Drawn INSIDE the canvas, so it moves and scales with it like anything else on
     /// the artboard.
     var showsEmptyHint: Bool = false
+    /// VoiceOver activation. A SpriteView is opaque to assistive technology, so the
+    /// canvas has to be published as one element with an action of its own — otherwise
+    /// the app's central surface simply is not there.
+    var onAccessibilityActivate: (() -> Void)?
     let availableSize: CGSize
 
     private var reference: CGSize { composition.aspectRatio.referenceSize }
@@ -59,6 +63,15 @@ struct CanvasStage: View {
         .allowsHitTesting(false)
     }
 
+    private var accessibilityDescription: String {
+        let typed = composition.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = typed.isEmpty ? "empty" : typed
+        let effect = composition.globalShader.kind == .none
+            ? ""
+            : ", \(composition.globalShader.kind.label) effect"
+        return "Canvas, \(composition.aspectRatio.label), \(subject)\(effect)"
+    }
+
     var body: some View {
         SpriteView(
             scene: scene,
@@ -71,6 +84,11 @@ struct CanvasStage: View {
         .overlay {
             if showsEmptyHint { emptyHint }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityHint("Double tap to edit the text")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onAccessibilityActivate?() }
         .onAppear {
             scene.interaction = interaction
             scene.interactionAmount = interactionAmount

@@ -61,7 +61,7 @@ struct GalleryView: View {
                             .overlay(alignment: .topTrailing) {
                                 if pins.isPinned(composition.id) {
                                     Image(systemName: "pin.fill")
-                                        .font(.system(size: 10, weight: .bold))
+                                        .font(.caption2.weight(.bold))
                                         .foregroundStyle(.black)
                                         .padding(5)
                                         .background(.white, in: .circle)
@@ -117,7 +117,7 @@ struct CompositionThumbnail: View {
                     Text("· \(composition.globalShader.kind.label)")
                 }
             }
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
             .foregroundStyle(.white.opacity(0.85))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)

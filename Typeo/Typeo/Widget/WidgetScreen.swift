@@ -63,13 +63,13 @@ struct WidgetScreen: View {
                 pins.isSharedContainerAvailable ? "Ready for the widget" : "Widget not installable yet",
                 systemImage: pins.isSharedContainerAvailable ? "checkmark.circle.fill" : "clock.badge.exclamationmark"
             )
-            .font(.system(size: 15, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(pins.isSharedContainerAvailable ? .green : .orange)
 
             Text(pins.isSharedContainerAvailable
                  ? "The App Group is active, so the home-screen widget can read what you pin here."
                  : "Pinning works and everything below is live. The home-screen widget itself needs an App Group, which requires a paid Apple Developer Program membership. Nothing here changes when you add it — the widget just starts seeing these.")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -121,7 +121,7 @@ struct WidgetScreen: View {
                 showPicker = true
             } label: {
                 Label("Choose compositions", systemImage: "square.grid.2x2")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.subheadline)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 14)
             }
@@ -143,7 +143,7 @@ struct WidgetScreen: View {
     private var rotationCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Rotate every")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
             Picker("Rotation", selection: Binding(
                 get: { pins.manifest.rotationMinutes },
                 set: { pins.setRotationMinutes($0) }
@@ -155,7 +155,7 @@ struct WidgetScreen: View {
             .pickerStyle(.segmented)
 
             Text("The widget shows one pinned composition at a time and moves to the next on this schedule. It cannot animate — widgets can't run the shader or physics canvas.")
-                .font(.system(size: 12))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -170,7 +170,7 @@ struct WidgetScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Pinned")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(pins.entries.count)")
                     .font(.system(.footnote, design: .monospaced))
@@ -179,7 +179,7 @@ struct WidgetScreen: View {
 
             if pins.entries.isEmpty {
                 Text("Nothing chosen yet. Use Choose compositions above to pick some.")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -191,7 +191,7 @@ struct WidgetScreen: View {
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.text.isEmpty ? "Untitled" : entry.text)
-                                .font(.system(size: 14, weight: .medium))
+                                .font(.subheadline)
                                 .lineLimit(1)
                             Text(entry.aspectRatio.label)
                                 .font(.system(size: 11, design: .monospaced))

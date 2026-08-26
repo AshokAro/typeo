@@ -24,11 +24,15 @@ struct EditorView: View {
     @State private var collisionsOn = false
     @State private var tiltSource = TiltSource()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Which detent the open sheet is sitting at, so the canvas knows how much room
     /// it actually has above it.
     @State private var sheetDetent: PresentationDetent = Self.shortSheet
     @State private var recordedVideo: URL?
     @State private var recording: RecordingPhase = .idle
+    /// Export failures used to be swallowed: the sheet simply never appeared and the
+    /// user was left guessing.
+    @State private var exportError: String?
     @State private var recordingTask: Task<Void, Never>?
 
     /// Recording is a countdown, then an open-ended take the user ends themselves.
@@ -76,10 +80,6 @@ struct EditorView: View {
         size: AspectRatio.square.referenceSize
     )
 
-    private var textBinding: Binding<String> {
-        Binding(get: { store.text }, set: { store.text = $0 })
-    }
-
     var body: some View {
         VStack(spacing: 10) {
             topBar
@@ -94,13 +94,14 @@ struct EditorView: View {
                         interactionAmount: currentAmount,
                         collisions: collisionsOn,
                         showsEmptyHint: store.composition.isEmpty,
+                        onAccessibilityActivate: { beginEditing(at: store.composition.glyphs.count) },
                         availableSize: CGSize(
                             width: proxy.size.width,
                             height: proxy.size.height * canvasHeightFactor
                         )
                     )
                     .frame(maxHeight: .infinity, alignment: isSheetOpen ? .top : .center)
-                    .animation(.snappy(duration: 0.25), value: canvasHeightFactor)
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: canvasHeightFactor)
                     if recording.isBusy {
                         recordingOverlay
                     }
@@ -120,6 +121,10 @@ struct EditorView: View {
                 .padding(.horizontal, 16)
         }
         .padding(.bottom, 6)
+        // The editor chrome is a fixed grid of controls around the artwork. Text still
+        // scales, but past this the bars would push the canvas off the screen; the
+        // sheets, where the reading happens, are uncapped.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .background(Color.black)
         .background(
             KeyInputBridge(
@@ -139,11 +144,7 @@ struct EditorView: View {
         )
         .onAppear {
             scene.onInteractionBegan = { didInteract = true }
-            scene.onCaretTap = { index in
-                caretIndex = index
-                isEditing = true
-                scene.setCaret(index: index)
-            }
+            scene.onCaretTap = { index in beginEditing(at: index) }
         }
         .onChange(of: isEditing) { _, editing in
             if !editing { scene.setCaret(index: nil); caretIndex = nil }
@@ -177,6 +178,14 @@ struct EditorView: View {
         }
         .sheet(isPresented: $isExporting) {
             if let exportImage { ExportSheet(image: exportImage) }
+        }
+        .alert("Export failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
         }
         .sheet(isPresented: $isRecordingSheetUp) {
             if let recordedVideo {
@@ -325,7 +334,7 @@ struct EditorView: View {
                 Button { resetLetters() } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 17, height: 24)
+                        .frame(width: 17, height: 30)
                 }
                 .buttonStyle(.glass)
                 .disabled(!canReset)
@@ -343,6 +352,20 @@ struct EditorView: View {
         .scrollClipDisabled()
     }
 
+    /// Chrome animation, honouring Reduce Motion in one place rather than at every
+    /// call site.
+    private var chromeAnimation: Animation? {
+        reduceMotion ? nil : .snappy(duration: 0.2)
+    }
+
+    /// Places the caret and raises the keyboard. Shared by a tap on the canvas and by
+    /// the canvas's VoiceOver action.
+    private func beginEditing(at index: Int) {
+        caretIndex = index
+        isEditing = true
+        scene.setCaret(index: index)
+    }
+
     private func isSelected(_ mode: GlyphInteraction) -> Bool {
         guard expandedSlider != .jumble else { return false }
         return interaction == mode
@@ -354,7 +377,7 @@ struct EditorView: View {
         // the only recovery if you started in an awkward pose.
         if mode == .tilt, interaction == .tilt { tiltSource.recalibrate() }
         interaction = mode
-        withAnimation(.snappy(duration: 0.2)) {
+        withAnimation(chromeAnimation) {
             expandedSlider = mode == .none ? nil : .interaction(mode)
         }
     }
@@ -366,7 +389,7 @@ struct EditorView: View {
         isEditing = false
         store.beginLiveJumble()
         store.updateLiveJumble(amount: jumbleAmount)
-        withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
+        withAnimation(chromeAnimation) { expandedSlider = .jumble }
     }
 
     /// Reset lights up the moment anything has actually been applied to the letters —
@@ -384,7 +407,7 @@ struct EditorView: View {
         jumbleAmount = 0
         for mode in GlyphInteraction.allCases { amounts[mode] = mode.defaultAmount }
         didInteract = false
-        withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
+        withAnimation(chromeAnimation) { expandedSlider = nil }
         interaction = .none
     }
 
@@ -429,6 +452,8 @@ struct EditorView: View {
                 .frame(width: 54, alignment: .leading)
 
             SnappingSlider(value: value, range: range)
+                .accessibilityLabel(title)
+                .accessibilityValue(detail)
 
             Button {
                 value.wrappedValue = isBipolar ? 0 : value.wrappedValue
@@ -446,7 +471,7 @@ struct EditorView: View {
 
             Button {
                 if case .jumble = target { store.endLiveJumble() }
-                withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
+                withAnimation(chromeAnimation) { expandedSlider = nil }
                 if case .jumble = target {} else { interaction = .none }
             } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
@@ -564,6 +589,7 @@ struct EditorView: View {
         } catch {
             recordedVideo = nil
             recording = .idle
+            exportError = error.localizedDescription
         }
     }
 
@@ -582,7 +608,7 @@ struct EditorView: View {
                 // disappears into whatever is already there.
                 .background(.black.opacity(0.45), in: .circle)
                 .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
-                .transition(.scale.combined(with: .opacity))
+                .transition(reduceMotion ? .opacity : .scale.combined(with: .opacity))
                 .id(step)
                 .allowsHitTesting(false)
                 .accessibilityLabel("Recording in \(step)")
@@ -690,31 +716,12 @@ struct EditorView: View {
         captureSceneTransforms()
         guard let image = CompositionRenderer.render(
             store.composition, time: 0, scale: 2, tilt: scene.tilt
-        ) else { return }
+        ) else {
+            exportError = "The canvas could not be rendered. Try again after closing other apps."
+            return
+        }
         exportImage = image
         isExporting = true
-    }
-}
-
-private struct AspectButton: View {
-    let ratio: AspectRatio
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        if isSelected { button.buttonStyle(.glassProminent) }
-        else { button.buttonStyle(.glass) }
-    }
-
-    private var button: some View {
-        // Icon-only: the three shapes are self-describing, and the top bar has to fit
-        // six controls. The ratio is still announced to VoiceOver.
-        Button(action: action) {
-            Image(systemName: ratio.systemImage)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 30, height: 26)
-        }
-        .accessibilityLabel("Aspect ratio \(ratio.label)")
     }
 }
 
@@ -735,7 +742,7 @@ private struct EditorSheetLayout: ViewModifier {
     }
 }
 
-/// A pill that stays lit while it is on — lock, and in Stage 3 collision.
+/// A pill that stays lit while it is on — lock, and collision.
 struct ToggleButton: View {
     let systemImage: String
     let isOn: Bool
@@ -747,13 +754,14 @@ struct ToggleButton: View {
             if isOn { button.buttonStyle(.glassProminent) }
             else { button.buttonStyle(.glass) }
         }
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 
     private var button: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
-                .frame(width: 17, height: 24)
+                .frame(width: 17, height: 30)
         }
         .accessibilityLabel(label)
     }
@@ -769,6 +777,8 @@ private struct InteractionButton: View {
             if isSelected { button.buttonStyle(.glassProminent) }
             else { button.buttonStyle(.glass) }
         }
+        // Selection is shown by tint alone, which is invisible to VoiceOver.
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     private var button: some View {
@@ -776,7 +786,7 @@ private struct InteractionButton: View {
             Label(mode.label, systemImage: mode.systemImage)
                 .font(.system(size: 12, weight: .semibold))
                 .labelStyle(.iconOnly)
-                .frame(width: 17, height: 24)
+                .frame(width: 17, height: 30)
         }
         .accessibilityLabel(mode.label)
     }
@@ -787,15 +797,18 @@ private struct ShuffleButton: View {
     let action: () -> Void
 
     var body: some View {
-        if isSelected { button.buttonStyle(.glassProminent) }
-        else { button.buttonStyle(.glass) }
+        Group {
+            if isSelected { button.buttonStyle(.glassProminent) }
+            else { button.buttonStyle(.glass) }
+        }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     private var button: some View {
         Button(action: action) {
             Image(systemName: "shuffle")
                 .font(.system(size: 14, weight: .semibold))
-                .frame(width: 17, height: 24)
+                .frame(width: 17, height: 30)
         }
         .accessibilityLabel("Shuffle letters")
     }

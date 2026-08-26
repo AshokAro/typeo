@@ -16,87 +16,6 @@ import UIKit
 import CoreImage
 import simd
 
-enum GlyphInteraction: String, CaseIterable, Identifiable {
-    case none, warp, attract, gravity, tilt
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .none:    "Off"
-        case .warp:    "Warp"
-        case .attract: "Attract"
-        case .gravity: "Gravity"
-        case .tilt:    "Tilt"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .none:    "hand.raised.slash"
-        case .warp:    "circle.circle"
-        case .attract: "hurricane"
-        case .gravity: "arrow.up.arrow.down"
-        case .tilt:    "gyroscope"
-        }
-    }
-
-    var amountLabel: String {
-        switch self {
-        case .none:    ""
-        case .warp:    "Warp"      // negative puckers, positive bloats
-        case .attract: "Pull"      // negative pushes away, positive pulls in
-        case .gravity: "Gravity"   // negative floats up, positive falls down
-        case .tilt:    "Tilt"      // negative rolls uphill, positive rolls downhill
-        }
-    }
-
-    /// Bipolar controls sit at 0 and do nothing until moved either way.
-    var amountRange: ClosedRange<Double> {
-        switch self {
-        case .none:    0...0
-        case .warp:    -1...1
-        case .attract: -1...1
-        case .gravity: -1...1
-        case .tilt:    -1...1
-        }
-    }
-
-    var defaultAmount: Double {
-        switch self {
-        case .none:    0
-        case .warp:    0
-        case .attract: 0
-        case .gravity: 0
-        case .tilt:    0
-        }
-    }
-
-    /// Wording for the readout at either end of a bipolar slider.
-    func amountDetail(_ value: Double) -> String {
-        switch self {
-        case .warp:
-            if value > 0.02 { return "bloat \(Int(value * 100))%" }
-            if value < -0.02 { return "pucker \(Int(-value * 100))%" }
-            return "none"
-        case .gravity:
-            if value > 0.02 { return "fall \(Int(value * 100))%" }
-            if value < -0.02 { return "float \(Int(-value * 100))%" }
-            return "still"
-        case .attract:
-            if value > 0.02 { return "pull \(Int(value * 100))%" }
-            if value < -0.02 { return "push \(Int(-value * 100))%" }
-            return "still"
-        case .tilt:
-            if value > 0.02 { return "downhill \(Int(value * 100))%" }
-            if value < -0.02 { return "uphill \(Int(-value * 100))%" }
-            return "level"
-        case .none:
-            return ""
-        }
-    }
-}
-
 final class GlyphScene: SKScene {
 
     private(set) var composition: Composition
@@ -689,13 +608,22 @@ final class GlyphScene: SKScene {
     /// moment collision was switched on.
     private static let collisionSlack: CGFloat = 0.08
 
-    /// The deepest overlap between two glyphs' shapes, if they touch at all.
-    private func deepestOverlap(
+    /// The combined contact between two glyphs' shapes.
+    ///
+    /// Every overlapping circle pair contributes, not just the deepest one. Resolving
+    /// only the deepest pair can push two interlocked letters along a normal that
+    /// immediately recreates an equally deep overlap somewhere else, and the pair sits
+    /// there oscillating — measured at 32pt of permanent interpenetration in a pile.
+    private func contact(
         _ a: [(centre: CGPoint, radius: CGFloat)],
-        _ b: [(centre: CGPoint, radius: CGFloat)]
+        _ b: [(centre: CGPoint, radius: CGFloat)],
+        fallback: CGVector
     ) -> (normal: CGVector, depth: CGFloat)? {
-        var bestDepth: CGFloat = 0
-        var bestNormal = CGVector(dx: 1, dy: 0)
+        var pushX: CGFloat = 0
+        var pushY: CGFloat = 0
+        var deepest: CGFloat = 0
+        var widest: CGFloat = 0
+        var hits = 0
 
         for first in a {
             for second in b {
@@ -705,15 +633,34 @@ final class GlyphScene: SKScene {
                 var distance = hypot(dx, dy)
                 guard distance < reach * (1 - Self.collisionSlack) else { continue }
                 let depth = reach - distance
-                guard depth > bestDepth else { continue }
                 // Coincident centres have no normal to push along. Pick a fixed one
                 // rather than a random one, so the result is repeatable.
                 if distance < 0.001 { distance = 0.001 }
-                bestDepth = depth
-                bestNormal = CGVector(dx: dx / distance, dy: dy / distance)
+                pushX += (dx / distance) * depth
+                pushY += (dy / distance) * depth
+                deepest = max(deepest, depth)
+                widest = max(widest, max(first.radius, second.radius))
+                hits += 1
             }
         }
-        return bestDepth > 0 ? (bestNormal, bestDepth) : nil
+
+        guard hits > 0 else { return nil }
+
+        // Two cases need the line between the glyphs rather than a surface normal:
+        //
+        //  · nearly concentric shapes, whose contacts point every way at once and sum
+        //    to nothing;
+        //  · DEEP interpenetration, where resolving one contact simply creates an equal
+        //    one on another face and the pair rocks between them forever. Measured as a
+        //    pair sitting permanently 33pt inside each other while the resolver
+        //    reported a push every single pass.
+        let length = hypot(pushX, pushY)
+        if length < deepest * 0.05 || deepest > widest * 0.9 {
+            let span = hypot(fallback.dx, fallback.dy)
+            guard span > 0.0001 else { return (CGVector(dx: 1, dy: 0), deepest) }
+            return (CGVector(dx: fallback.dx / span, dy: fallback.dy / span), deepest)
+        }
+        return (CGVector(dx: pushX / length, dy: pushY / length), deepest)
     }
 
     private func resolveCollisions() {
@@ -738,7 +685,11 @@ final class GlyphScene: SKScene {
                     let span = hypot(centres[j].x - centres[i].x, centres[j].y - centres[i].y)
                     guard span < radii[i] + radii[j] else { continue }
 
-                    guard let hit = deepestOverlap(placed[i], placed[j]) else { continue }
+                    guard let hit = contact(
+                        placed[i], placed[j],
+                        fallback: CGVector(dx: centres[j].x - centres[i].x,
+                                           dy: centres[j].y - centres[i].y)
+                    ) else { continue }
                     let push = hit.depth * 0.5
 
                     a.position.x -= hit.normal.dx * push
@@ -788,8 +739,18 @@ final class GlyphScene: SKScene {
         motion[id] = state
     }
 
+    /// A stable pseudo-random value per glyph, from the UUID's own bytes.
+    ///
+    /// NOT `hashValue`: Swift seeds hashing per PROCESS, so the same saved composition
+    /// would tumble differently every launch — and a recording made in one session
+    /// could not be reproduced in the next.
     private func seedValue(for id: UUID) -> CGFloat {
-        CGFloat(abs(id.uuidString.hashValue % 1000)) / 1000
+        let bytes = id.uuid
+        let mixed = UInt32(bytes.0) &* 73856093
+            ^ UInt32(bytes.5) &* 19349663
+            ^ UInt32(bytes.10) &* 83492791
+            ^ UInt32(bytes.15) &* 2971215073
+        return CGFloat(mixed % 1000) / 1000
     }
 
     private func resetMotion() {
@@ -800,12 +761,17 @@ final class GlyphScene: SKScene {
     }
 
     // MARK: - Test hooks
+    //
+    // DEBUG only: the release binary carries none of this. `SelfCheck` is the app's
+    // test surface — there is no unit-test target because the parts worth testing only
+    // behave correctly inside a real Metal context.
 
-    var currentComposition: Composition { composition }
+    #if DEBUG
+    var debugGlyphNodeCount: Int { glyphNodes.count }
 
-    var debugMeanGlyphY: CGFloat {
-        guard !glyphNodes.isEmpty else { return 0 }
-        return glyphNodes.values.reduce(0) { $0 + $1.position.y } / CGFloat(glyphNodes.count)
+    /// Node positions in laid-out order, for comparing two runs of the same input.
+    var debugOrderedPositions: [CGPoint] {
+        orderedIds.compactMap { glyphNodes[$0]?.position }
     }
 
     var debugMeanGlyphScale: CGFloat {
@@ -818,24 +784,13 @@ final class GlyphScene: SKScene {
         return glyphNodes.values.reduce(0) { $0 + abs($1.zRotation) } / CGFloat(glyphNodes.count)
     }
 
-    var debugPreInteractionMeanAbsRotation: CGFloat {
-        guard !preInteractionState.isEmpty else { return 0 }
-        return preInteractionState.values.reduce(0) { $0 + abs($1.rotation) } / CGFloat(preInteractionState.count)
-    }
-
-    func debugMeanDistance(to point: CGPoint) -> CGFloat {
-        guard !glyphNodes.isEmpty else { return 0 }
-        return glyphNodes.values.reduce(0) {
-            $0 + hypot($1.position.x - point.x, $1.position.y - point.y)
-        } / CGFloat(glyphNodes.count)
-    }
-
     /// Pairs whose collision proxies currently overlap. 0 means nothing is stacked.
     var debugOverlappingPairs: Int {
         var count = 0
         let placed = orderedIds.map { worldCircles($0) }
         for i in 0..<max(0, orderedIds.count - 1) {
-            for j in (i + 1)..<orderedIds.count where deepestOverlap(placed[i], placed[j])?.depth ?? 0 > 0.5 {
+            for j in (i + 1)..<orderedIds.count
+            where contact(placed[i], placed[j], fallback: .zero)?.depth ?? 0 > 0.5 {
                 count += 1
             }
         }
@@ -848,23 +803,10 @@ final class GlyphScene: SKScene {
         var worst: CGFloat = 0
         for i in 0..<max(0, orderedIds.count - 1) {
             for j in (i + 1)..<orderedIds.count {
-                worst = max(worst, deepestOverlap(placed[i], placed[j])?.depth ?? 0)
+                worst = max(worst, contact(placed[i], placed[j], fallback: .zero)?.depth ?? 0)
             }
         }
         return worst
-    }
-
-    var debugShapeCircleCounts: [Int] {
-        orderedIds.map { glyphShapes[$0]?.count ?? 0 }
-    }
-
-    /// Node positions in laid-out order, for comparing two runs of the same input.
-    var debugOrderedPositions: [CGPoint] {
-        orderedIds.compactMap { glyphNodes[$0]?.position }
-    }
-
-    var debugHasSpringBackActions: Bool {
-        glyphNodes.values.contains { $0.hasActions() }
     }
 
     func simulateTouchDown(at point: CGPoint) {
@@ -881,6 +823,7 @@ final class GlyphScene: SKScene {
         touchDownPoint = nil
         if !isLocked, interaction != .gravity, interaction != .tilt { springBack() }
     }
+    #endif
 
     // MARK: - Touch recording (v6 video)
     //
@@ -1132,67 +1075,5 @@ final class GlyphScene: SKScene {
             result[id] = (offset, degrees)
         }
         return result
-    }
-}
-
-// MARK: - Background
-
-enum BackgroundTextureFactory {
-    static func node(for background: Background, size: CGSize) -> SKSpriteNode {
-        switch background {
-        case let .solid(rgba):
-            return SKSpriteNode(color: UIColor(rgba.color), size: size)
-
-        case .linearGradient, .image:
-            return SKSpriteNode(texture: texture(for: background, size: size), size: size)
-        }
-    }
-
-    /// The same pixels as `node`, as a texture — the glass shader has to SAMPLE the
-    /// background, and a solid colour node has no texture to sample.
-    static func texture(for background: Background, size: CGSize) -> SKTexture {
-        switch background {
-        case let .image(id):
-            // A missing file falls back to black rather than an empty canvas: the photo
-            // lives outside the composition, so it can go away independently.
-            return BackgroundImageStore.texture(for: id, size: size)
-                ?? texture(for: .solid(.black), size: size)
-
-        case let .solid(rgba):
-            let format = UIGraphicsImageRendererFormat.default()
-            format.scale = 1
-            let small = CGSize(width: 8, height: 8)
-            let image = UIGraphicsImageRenderer(size: small, format: format).image { context in
-                UIColor(rgba.color).setFill()
-                context.fill(CGRect(origin: .zero, size: small))
-            }
-            return SKTexture(image: image)
-
-        case let .linearGradient(colors, angleDegrees):
-            let format = UIGraphicsImageRendererFormat.default()
-            format.scale = 1
-            let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-                let cgColors = colors.map { UIColor($0.color).cgColor } as CFArray
-                guard let gradient = CGGradient(
-                    colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                    colors: cgColors,
-                    locations: nil
-                ) else { return }
-                let radians = angleDegrees * .pi / 180
-                let start = CGPoint(x: size.width * (0.5 - 0.5 * cos(radians)),
-                                    y: size.height * (0.5 - 0.5 * sin(radians)))
-                let end = CGPoint(x: size.width * (0.5 + 0.5 * cos(radians)),
-                                  y: size.height * (0.5 + 0.5 * sin(radians)))
-                // Without these, anything outside the start/end band is left unpainted
-                // and the canvas corners come out black at any oblique angle.
-                context.cgContext.drawLinearGradient(
-                    gradient,
-                    start: start,
-                    end: end,
-                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-                )
-            }
-            return SKTexture(image: image)
-        }
     }
 }

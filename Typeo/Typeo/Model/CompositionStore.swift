@@ -271,8 +271,6 @@ final class CompositionStore {
     private var liveTilt: [Int: LiveTilt] = [:]
     private var liveRestyle: [Int: LiveRestyle] = [:]
 
-    var isLiveJumbling: Bool { liveBaseline != nil }
-
     /// Rolls a fresh set of random values and applies the scatter straight away.
     /// Calling it again re-rolls, which is what tapping the shuffle pill does.
     func beginLiveJumble() {

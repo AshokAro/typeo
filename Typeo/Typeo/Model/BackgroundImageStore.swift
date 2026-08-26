@@ -20,6 +20,13 @@ enum BackgroundImageStore {
 
     private static var images: [String: UIImage] = [:]
     private static var textures: [String: SKTexture] = [:]
+    /// These are full-canvas bitmaps, so a handful is already megabytes.
+    private static let cacheLimit = 8
+
+    private static func trimIfNeeded() {
+        if images.count > cacheLimit { images.removeAll(keepingCapacity: true) }
+        if textures.count > cacheLimit { textures.removeAll(keepingCapacity: true) }
+    }
 
     static func url(for id: String) -> URL {
         directory.appending(path: "\(id).jpg")
@@ -44,6 +51,7 @@ enum BackgroundImageStore {
         if BuiltInBackgrounds.isBuiltIn(id) {
             guard let image = BuiltInBackgrounds.image(for: id) else { return nil }
             images[id] = image
+            trimIfNeeded()
             return image
         }
         guard let image = UIImage(contentsOfFile: url(for: id).path) else { return nil }
@@ -73,6 +81,7 @@ enum BackgroundImageStore {
         }
         let texture = SKTexture(image: filled)
         textures[key] = texture
+        trimIfNeeded()
         return texture
     }
 

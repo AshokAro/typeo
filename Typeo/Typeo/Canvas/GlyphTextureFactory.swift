@@ -29,6 +29,17 @@ enum GlyphTextureFactory {
     private static var cache: [Key: SKTexture] = [:]
     private static var sizes: [Key: CGSize] = [:]
 
+    /// Dragging the size slider mints a texture per step — 190 of them across the
+    /// range, per character. Unbounded, that is tens of megabytes of glyphs nobody is
+    /// looking at any more, so the cache is emptied rather than allowed to grow.
+    private static let cacheLimit = 240
+
+    private static func trimIfNeeded() {
+        guard cache.count > cacheLimit else { return }
+        cache.removeAll(keepingCapacity: true)
+        sizes.removeAll(keepingCapacity: true)
+    }
+
     static func uiFont(for font: GlyphFont, size: CGFloat) -> UIFont {
         if let name = font.fontName, let custom = UIFont(name: name, size: size) {
             return custom
@@ -85,6 +96,7 @@ enum GlyphTextureFactory {
         let texture = SKTexture(image: image)
         texture.filteringMode = .linear
         cache[key] = texture
+        trimIfNeeded()
         return texture
     }
 
@@ -92,4 +104,8 @@ enum GlyphTextureFactory {
         cache.removeAll()
         sizes.removeAll()
     }
+
+    #if DEBUG
+    static var debugCacheCount: Int { cache.count }
+    #endif
 }

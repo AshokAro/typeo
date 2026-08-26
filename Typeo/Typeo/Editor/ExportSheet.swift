@@ -45,7 +45,7 @@ struct ExportSheet: View {
                             }
                             Text(isSaving ? "Saving…" : "Save to Photos")
                         }
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                     }
@@ -56,7 +56,7 @@ struct ExportSheet: View {
                         showShareSheet = true
                     } label: {
                         Label("Share", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
@@ -85,18 +85,18 @@ struct ExportSheet: View {
         case .saved:
             Label("Saved to Photos", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .font(.system(size: 15, weight: .medium))
+                .font(.subheadline)
         case .permissionDenied:
             Label("Typeo needs permission to add photos. Enable it in Settings › Typeo › Photos.",
                   systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-                .font(.system(size: 14))
+                .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         case let .failed(message):
             Label("Could not save: \(message)", systemImage: "xmark.circle.fill")
                 .foregroundStyle(.red)
-                .font(.system(size: 14))
+                .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         }

@@ -162,6 +162,8 @@ struct StylePanel: View {
                     .foregroundStyle(.secondary)
             }
             SnappingSlider(value: binding(for: control), range: control.range)
+                .accessibilityLabel(control.label)
+                .accessibilityValue(readout(current, bipolar: control.isBipolar))
         }
     }
 
@@ -193,7 +195,7 @@ struct StylePanel: View {
                                 .stroke(Color.primary.opacity(0.15), lineWidth: 1))
 
                             Text(preset.name)
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
