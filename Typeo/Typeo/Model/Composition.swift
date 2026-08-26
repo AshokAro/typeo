@@ -73,6 +73,21 @@ struct RGBAColor: Codable, Hashable {
     static let ink   = RGBAColor(red: 0.09, green: 0.10, blue: 0.09)
 }
 
+// MARK: - Text block layout
+
+enum TextBlockAlignment: String, Codable, CaseIterable, Identifiable, Hashable {
+    case leading, center, trailing
+
+    var id: String { rawValue }
+    var systemImage: String {
+        switch self {
+        case .leading:  "text.alignleft"
+        case .center:   "text.aligncenter"
+        case .trailing: "text.alignright"
+        }
+    }
+}
+
 // MARK: - Gradient
 
 /// A linear gradient. Used for the text fill; `Background` carries its own case.
@@ -246,6 +261,11 @@ struct Composition: Identifiable, Codable, Hashable {
     var background: Background = .defaultBackground
     var globalShader: ShaderEffect = .none
     var glyphs: [Glyph] = []
+    /// v6 layout controls. ADDITIVE and Optional so pre-v6 files still decode; the
+    /// `resolved*` accessors below supply the old behaviour as the default.
+    var alignment: TextBlockAlignment?
+    var letterSpacing: Double?
+    var lineHeightMultiple: Double?
     /// v6, ADDITIVE and optional so compositions saved before it still decode.
     /// When set, the text is filled with this gradient across the whole block and
     /// per-glyph colours are ignored. When nil, each glyph uses its own colour, so
@@ -259,7 +279,10 @@ struct Composition: Identifiable, Codable, Hashable {
         background: Background = .defaultBackground,
         globalShader: ShaderEffect = .none,
         glyphs: [Glyph] = [],
-        textGradient: GradientPaint? = nil
+        textGradient: GradientPaint? = nil,
+        alignment: TextBlockAlignment? = nil,
+        letterSpacing: Double? = nil,
+        lineHeightMultiple: Double? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -268,7 +291,15 @@ struct Composition: Identifiable, Codable, Hashable {
         self.globalShader = globalShader
         self.glyphs = glyphs
         self.textGradient = textGradient
+        self.alignment = alignment
+        self.letterSpacing = letterSpacing
+        self.lineHeightMultiple = lineHeightMultiple
     }
+
+    /// Defaults match pre-v6 behaviour exactly, so an old file renders identically.
+    var resolvedAlignment: TextBlockAlignment { alignment ?? .center }
+    var resolvedLetterSpacing: CGFloat { CGFloat(letterSpacing ?? 0) }
+    var resolvedLineHeight: CGFloat { CGFloat(lineHeightMultiple ?? 1) }
 
     var text: String { glyphs.map(\.character).joined() }
     var isEmpty: Bool { glyphs.isEmpty }

@@ -138,6 +138,23 @@ only what happens in between.
 - Don't wrap a fixed-size glass control in `GlassEffectContainer`; it is for morphing
   between glass shapes and sized the rail's capsule to the wrong bounds.
 
+## v6 Stage B notes
+
+- Text is edited ON the canvas. A `UIKeyInput` view (`KeyInputBridge`) supplies
+  insertText/deleteBackward and nothing else; the caret index and the caret node are
+  ours. A UITextField would mean mirroring a hidden field's selection onto the canvas.
+  Cost: no autocorrect or dictation, which suits a typography canvas.
+- Edits are insert/delete at a caret index, NOT setText. That keeps the glyph ids
+  either side of the caret stable, so per-letter styling survives editing —
+  setText's positional reconcile could not guarantee that.
+- Taps reach the SpriteKit scene directly. Do NOT put a SwiftUI `onTapGesture` on the
+  canvas container; it swallows the touches the scene needs for caret placement.
+- `float` was absorbed into `attract` at strength 0 (zero gravity). Modes are now
+  none / bloat / pucker / attract / drop, each with one 0...1 amount.
+- Alignment, letterSpacing and lineHeightMultiple are Optional for the same decode
+  reason as textGradient; `resolved*` accessors supply the pre-v6 defaults, and there
+  is a test asserting an old file renders byte-identically.
+
 ## v5 widget notes
 
 - `TypeoSharedStore` is THE SEAM. It returns the App Group container when the

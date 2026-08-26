@@ -16,26 +16,53 @@ import UIKit
 import simd
 
 enum GlyphInteraction: String, CaseIterable, Identifiable {
-    case none, inflate, float, gravity
+    case none, bloat, pucker, attract, drop
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .none:    "Off"
-        case .inflate: "Inflate"
-        case .float:   "Float"
-        case .gravity: "Drop"
+        case .bloat:   "Bloat"
+        case .pucker:  "Pucker"
+        case .attract: "Attract"
+        case .drop:    "Drop"
         }
     }
 
     var systemImage: String {
         switch self {
         case .none:    "hand.raised.slash"
-        case .inflate: "arrow.up.left.and.arrow.down.right"
-        case .float:   "wind"
-        case .gravity: "arrow.down.to.line"
+        case .bloat:   "arrow.up.left.and.arrow.down.right"
+        case .pucker:  "arrow.down.right.and.arrow.up.left"
+        case .attract: "hurricane"
+        case .drop:    "arrow.down.to.line"
         }
+    }
+
+    /// What the slider means for this mode.
+    var amountLabel: String {
+        switch self {
+        case .none:    ""
+        case .bloat:   "Bloat"
+        case .pucker:  "Pucker"
+        case .attract: "Pull"       // 0 = zero gravity, letters just drift
+        case .drop:    "Gravity"
+        }
+    }
+
+    var defaultAmount: Double {
+        switch self {
+        case .none:    0
+        case .bloat:   0.5
+        case .pucker:  0.5
+        case .attract: 0.45
+        case .drop:    0.5
+        }
+    }
+
+    var usesTouchPoint: Bool {
+        self == .bloat || self == .pucker || self == .attract
     }
 }
 
@@ -43,6 +70,13 @@ final class GlyphScene: SKScene {
 
     private(set) var composition: Composition
     var interaction: GlyphInteraction = .none
+    /// Meaning depends on the mode: bloat/pucker size, attract pull (0 = zero-g),
+    /// drop gravity.
+    var interactionAmount: Double = 0.5
+
+    /// Called when the canvas is tapped with no interaction mode active, so the editor
+    /// can move the insertion point. Carries the caret index the tap landed on.
+    var onCaretTap: ((Int) -> Void)?
 
     private var glyphNodes: [UUID: SKSpriteNode] = [:]
     private var restPositions: [UUID: CGPoint] = [:]
@@ -75,6 +109,9 @@ final class GlyphScene: SKScene {
             || composition.glyphs.map(\.size) != self.composition.glyphs.map(\.size)
             || composition.glyphs.map(\.font) != self.composition.glyphs.map(\.font)
             || composition.aspectRatio != self.composition.aspectRatio
+            || composition.alignment != self.composition.alignment
+            || composition.letterSpacing != self.composition.letterSpacing
+            || composition.lineHeightMultiple != self.composition.lineHeightMultiple
         self.composition = composition
         if needsRebuild {
             rebuild()
@@ -119,8 +156,10 @@ final class GlyphScene: SKScene {
         let layout = GlyphLayoutEngine.layout(
             metrics: metrics,
             maxWidth: size.width * textInset,
-            lineSpacing: dominant * 0.14,
-            fallbackLineHeight: dominant * 0.9
+            lineSpacing: dominant * (0.14 + (composition.resolvedLineHeight - 1)),
+            fallbackLineHeight: dominant * 0.9,
+            letterSpacing: composition.resolvedLetterSpacing,
+            alignment: composition.resolvedAlignment
         )
 
         let originX = (size.width - layout.size.width) / 2
@@ -153,6 +192,7 @@ final class GlyphScene: SKScene {
         }
 
         applyShader()
+        rebuildCaret()
     }
 
     private func applyAppearance() {
@@ -203,9 +243,14 @@ final class GlyphScene: SKScene {
     private struct Motion {
         var velocity: CGFloat = 0
         var spin: CGFloat = 0
+        var driftX: CGFloat = 0
+        var driftY: CGFloat = 0
     }
 
     private var motion: [UUID: Motion] = [:]
+    private var caretNode: SKSpriteNode?
+    private var caretIndex: Int?
+    private var touchDownPoint: CGPoint?
     private var interactionStart: TimeInterval?
     private var lastAdvance: TimeInterval?
 
@@ -221,32 +266,59 @@ final class GlyphScene: SKScene {
         case .none:
             break
 
-        case .inflate:
+        case .bloat, .pucker:
             guard isHolding, let touch = touchPoint else { break }
-            let reach = size.width * 0.35
+            let reach = size.width * 0.38
+            // Bloat grows, pucker shrinks. Amount sets how far it goes.
+            let extent = interaction == .bloat
+                ? 1 + interactionAmount * 2.0
+                : 1 - interactionAmount * 0.75
             for node in glyphNodes.values {
                 let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
                 let distance = hypot(centre.x - touch.x, centre.y - touch.y)
                 let influence = max(0, 1 - distance / reach)
-                let target = 1 + influence * 1.6
-                let rate = min(1, delta * 8)
+                let target = 1 + (extent - 1) * influence
+                let rate = min(1, delta * 9)
                 node.setScale(node.xScale + (target - node.xScale) * rate)
             }
 
-        case .float:
-            guard isHolding else { break }
+        case .attract:
+            guard isHolding, delta > 0 else { break }
+            // Amount 0 is zero gravity: the letters just drift. Higher values pull them
+            // toward wherever the finger is.
+            let pull = CGFloat(interactionAmount) * size.width * 5.5
+            let damping: CGFloat = 0.90
+            let target = touchPoint ?? CGPoint(x: size.width / 2, y: size.height / 2)
+
             for (id, node) in glyphNodes {
-                guard let rest = restPositions[id] else { continue }
+                var state = motion[id] ?? Motion(velocity: 0, spin: 0)
                 let seed = seedValue(for: id)
-                let drift = sin(elapsed * 1.6 + seed * 6.28) * 16
-                let rise = min(size.height * 0.24, elapsed * size.height * 0.14)
-                node.position = CGPoint(x: rest.x + drift, y: rest.y + rise)
-                node.zRotation = CGFloat(sin(elapsed * 1.1 + seed * 6.28) * 0.12)
+
+                let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
+                var dx = target.x - centre.x
+                var dy = target.y - centre.y
+                let distance = max(24, hypot(dx, dy))
+                dx /= distance
+                dy /= distance
+
+                // Weak wander so amount 0 still feels alive rather than frozen.
+                let wanderX = CGFloat(sin(elapsed * 1.3 + Double(seed) * 6.28)) * size.width * 0.10
+                let wanderY = CGFloat(cos(elapsed * 1.1 + Double(seed) * 6.28)) * size.height * 0.10
+
+                state.driftX += (dx * pull + wanderX) * delta
+                state.driftY += (dy * pull + wanderY) * delta
+                state.driftX *= damping
+                state.driftY *= damping
+
+                node.position.x += state.driftX * delta
+                node.position.y += state.driftY * delta
+                node.zRotation += CGFloat(sin(elapsed * 0.9 + Double(seed) * 6.28)) * 0.02
+                motion[id] = state
             }
 
-        case .gravity:
+        case .drop:
             guard delta > 0 else { break }
-            let gravity = -size.height * 2.4          // points per second squared
+            let gravity = -size.height * (0.6 + CGFloat(interactionAmount) * 3.2)
             let bounce: CGFloat = 0.32
             for (id, node) in glyphNodes {
                 var state = motion[id] ?? Motion(velocity: 0, spin: (seedValue(for: id) - 0.5) * 3.2)
@@ -279,11 +351,97 @@ final class GlyphScene: SKScene {
         lastAdvance = nil
     }
 
+    // MARK: - Caret
+    //
+    // v6 edits text in the canvas rather than in a field below it. The caret is a real
+    // node in the scene, positioned from the same layout the glyphs use.
+
+    func setCaret(index: Int?) {
+        caretIndex = index
+        rebuildCaret()
+    }
+
+    private func rebuildCaret() {
+        caretNode?.removeFromParent()
+        caretNode = nil
+
+        guard let index = caretIndex, let placement = caretPosition(for: index) else { return }
+
+        let bar = SKSpriteNode(
+            color: .white,
+            size: CGSize(width: max(4, composition.dominantSize * 0.045), height: placement.height * 0.86)
+        )
+        bar.position = placement.point
+        bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        bar.zPosition = 100
+        bar.run(.repeatForever(.sequence([
+            .fadeAlpha(to: 0.12, duration: 0.5),
+            .fadeAlpha(to: 0.95, duration: 0.5),
+        ])))
+        addChild(bar)
+        caretNode = bar
+    }
+
+    /// Where the caret sits for a given insertion index.
+    func caretPosition(for index: Int) -> (point: CGPoint, height: CGFloat)? {
+        let glyphs = composition.glyphs
+        let fallback = (
+            point: CGPoint(x: size.width / 2, y: size.height / 2),
+            height: composition.dominantSize
+        )
+        guard !glyphs.isEmpty else { return fallback }
+
+        if index < glyphs.count,
+           let node = glyphNodes[glyphs[index].id],
+           let rest = restPositions[glyphs[index].id] {
+            return (CGPoint(x: rest.x, y: rest.y), node.size.height)
+        }
+
+        // Caret past the end, or on a line-break glyph that has no node: walk back to
+        // the last glyph that was actually laid out.
+        var cursor = min(index, glyphs.count) - 1
+        while cursor >= 0 {
+            if let node = glyphNodes[glyphs[cursor].id],
+               let rest = restPositions[glyphs[cursor].id] {
+                return (CGPoint(x: rest.x + node.size.width, y: rest.y), node.size.height)
+            }
+            cursor -= 1
+        }
+        return fallback
+    }
+
+    /// Nearest insertion point to a tap. Vertical distance is weighted so a tap picks
+    /// the right LINE first, then the nearest gap on it.
+    func caretIndex(atScenePoint point: CGPoint) -> Int {
+        let glyphs = composition.glyphs
+        guard !glyphs.isEmpty else { return 0 }
+
+        var best = 0
+        var bestScore = CGFloat.greatestFiniteMagnitude
+
+        for (index, glyph) in glyphs.enumerated() {
+            guard let node = glyphNodes[glyph.id], let rest = restPositions[glyph.id] else { continue }
+            let candidates: [(CGFloat, Int)] = [
+                (rest.x, index),
+                (rest.x + node.size.width, index + 1),
+            ]
+            for (boundaryX, candidateIndex) in candidates {
+                let score = abs(point.y - rest.y) * 2.2 + abs(point.x - boundaryX)
+                if score < bestScore {
+                    bestScore = score
+                    best = candidateIndex
+                }
+            }
+        }
+        return best
+    }
+
     // MARK: - Touch
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let point = touches.first?.location(in: self) else { return }
         touchPoint = point
+        touchDownPoint = point
         isHolding = true
         resetMotion()
     }
@@ -293,9 +451,24 @@ final class GlyphScene: SKScene {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let end = touches.first?.location(in: self) ?? touchDownPoint
+        var travelled: CGFloat = 0
+        if let down = touchDownPoint, let end {
+            travelled = hypot(end.x - down.x, end.y - down.y)
+        }
+
         isHolding = false
         touchPoint = nil
-        if interaction != .gravity { springBack() }
+        touchDownPoint = nil
+
+        if interaction == .none {
+            // A tap with no mode active moves the insertion point.
+            if travelled < 14, let end {
+                onCaretTap?(caretIndex(atScenePoint: end))
+            }
+            return
+        }
+        if interaction != .drop { springBack() }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {

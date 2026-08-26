@@ -28,6 +28,40 @@ struct StylePanel: View {
                     }
                 }
 
+                Section("Layout") {
+                    Picker("Alignment", selection: Binding(
+                        get: { store.composition.resolvedAlignment },
+                        set: { store.setAlignment($0) }
+                    )) {
+                        ForEach(TextBlockAlignment.allCases) { alignment in
+                            Image(systemName: alignment.systemImage).tag(alignment)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Letter spacing")
+                            Spacer()
+                            Text("\(Int(store.composition.resolvedLetterSpacing))")
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: store.letterSpacingBinding, in: -30...120, step: 1)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Line height")
+                            Spacer()
+                            Text(store.composition.resolvedLineHeight, format: .number.precision(.fractionLength(2)))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: store.lineHeightBinding, in: 0.6...2.2)
+                    }
+                }
+
                 Section("Effect") {
                     Picker("Effect", selection: effectKindBinding) {
                         ForEach(ShaderEffect.Kind.allCases) { kind in

@@ -116,6 +116,65 @@ final class CompositionStore {
         composition.glyphs = next
     }
 
+    // MARK: In-canvas editing (v6)
+    //
+    // Text is edited on the canvas now, so edits are insert/delete at a caret index
+    // rather than a whole-string replacement. Glyphs either side of the caret keep
+    // their identity and per-letter styling, which setText's positional reconcile
+    // could not guarantee.
+
+    /// Inserts at `index` and returns the caret position after the insertion.
+    @discardableResult
+    func insertText(_ text: String, at index: Int) -> Int {
+        guard !text.isEmpty else { return index }
+        checkpoint("text", coalesceFor: 1.2)
+        let clamped = min(max(0, index), composition.glyphs.count)
+        let inserted = text.map { character in
+            Glyph(
+                character: String(character),
+                font: style.font,
+                size: style.size,
+                color: style.color
+            )
+        }
+        composition.glyphs.insert(contentsOf: inserted, at: clamped)
+        return clamped + inserted.count
+    }
+
+    /// Deletes the glyph before `index` and returns the new caret position.
+    @discardableResult
+    func deleteBackward(at index: Int) -> Int {
+        guard index > 0, index <= composition.glyphs.count else { return index }
+        checkpoint("text", coalesceFor: 1.2)
+        composition.glyphs.remove(at: index - 1)
+        return index - 1
+    }
+
+    // MARK: Layout (v6)
+
+    func setAlignment(_ alignment: TextBlockAlignment) {
+        checkpoint("alignment")
+        composition.alignment = alignment
+    }
+
+    func setLetterSpacing(_ value: Double) {
+        checkpoint("spacing", coalesceFor: 0.8)
+        composition.letterSpacing = value
+    }
+
+    func setLineHeight(_ value: Double) {
+        checkpoint("lineHeight", coalesceFor: 0.8)
+        composition.lineHeightMultiple = value
+    }
+
+    var letterSpacingBinding: Binding<Double> {
+        Binding(get: { self.composition.letterSpacing ?? 0 }, set: { self.setLetterSpacing($0) })
+    }
+
+    var lineHeightBinding: Binding<Double> {
+        Binding(get: { self.composition.lineHeightMultiple ?? 1 }, set: { self.setLineHeight($0) })
+    }
+
     // MARK: Style — v1 writes the same value to every glyph
 
     func mutateAllGlyphs(_ body: (inout Glyph) -> Void) {
@@ -180,11 +239,22 @@ final class CompositionStore {
         var sizes = true
         var colors = false
         var rotation = true
+        /// Fraction of letters that change, 0...1. Low values touch one or two letters;
+        /// 1 randomises everything, which is what v3 always did.
+        var amount: Double = 1
     }
 
     func jumble(_ options: JumbleOptions = JumbleOptions()) {
         checkpoint("jumble")
-        for index in composition.glyphs.indices where composition.glyphs[index].role == .glyph {
+
+        let eligible = composition.glyphs.indices.filter { composition.glyphs[$0].role == .glyph }
+        guard !eligible.isEmpty else { return }
+
+        let fraction = min(max(options.amount, 0), 1)
+        let count = fraction <= 0 ? 0 : max(1, Int((Double(eligible.count) * fraction).rounded()))
+        let chosen = Set(eligible.shuffled().prefix(count))
+
+        for index in eligible where chosen.contains(index) {
             if options.fonts, let option = FontCatalog.all.randomElement() {
                 composition.glyphs[index].font = option.glyphFont
             }

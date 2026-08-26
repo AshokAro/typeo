@@ -40,12 +40,15 @@ enum GlyphLayoutEngine {
         metrics: [GlyphMetric],
         maxWidth: CGFloat,
         lineSpacing: CGFloat,
-        fallbackLineHeight: CGFloat
+        fallbackLineHeight: CGFloat,
+        letterSpacing: CGFloat = 0,
+        alignment: TextBlockAlignment = .center
     ) -> GlyphBlockLayout {
         let lines = wrap(
             metrics: metrics,
             maxWidth: maxWidth,
-            fallbackLineHeight: fallbackLineHeight
+            fallbackLineHeight: fallbackLineHeight,
+            letterSpacing: letterSpacing
         )
         guard !lines.isEmpty else { return GlyphBlockLayout(placements: [], size: .zero) }
 
@@ -56,7 +59,11 @@ enum GlyphLayoutEngine {
         var y: CGFloat = 0
 
         for line in lines {
-            var x = (blockWidth - line.width) / 2   // centre each line in the block
+            var x: CGFloat = switch alignment {
+            case .leading:  0
+            case .center:   (blockWidth - line.width) / 2
+            case .trailing: blockWidth - line.width
+            }
             for index in line.indices {
                 let size = metrics[index].size
                 placements.append(
@@ -66,7 +73,7 @@ enum GlyphLayoutEngine {
                         size: size
                     )
                 )
-                x += size.width
+                x += size.width + letterSpacing
             }
             y += line.height + lineSpacing
         }
@@ -80,14 +87,17 @@ enum GlyphLayoutEngine {
     static func wrap(
         metrics: [GlyphMetric],
         maxWidth: CGFloat,
-        fallbackLineHeight: CGFloat
+        fallbackLineHeight: CGFloat,
+        letterSpacing: CGFloat = 0
     ) -> [Line] {
         var lines: [Line] = []
         var current: [Int] = []
         var lastSpaceSlot: Int?
 
         func width(of indices: [Int]) -> CGFloat {
-            indices.reduce(0) { $0 + metrics[$1].size.width }
+            guard !indices.isEmpty else { return 0 }
+            let glyphs = indices.reduce(0) { $0 + metrics[$1].size.width }
+            return glyphs + letterSpacing * CGFloat(indices.count - 1)
         }
         func height(of indices: [Int]) -> CGFloat {
             let tallest = indices.map { metrics[$0].size.height }.max() ?? 0

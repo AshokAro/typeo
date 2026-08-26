@@ -14,6 +14,7 @@ struct CanvasStage: View {
     let scene: GlyphScene
     let composition: Composition
     let interaction: GlyphInteraction
+    let interactionAmount: Double
     let availableSize: CGSize
 
     private var reference: CGSize { composition.aspectRatio.referenceSize }
@@ -40,6 +41,7 @@ struct CanvasStage: View {
         .clipShape(.rect(cornerRadius: 28, style: .continuous))
         .onAppear {
             scene.interaction = interaction
+            scene.interactionAmount = interactionAmount
             scene.update(composition: composition)
         }
         .onChange(of: composition) { _, new in
@@ -47,6 +49,9 @@ struct CanvasStage: View {
         }
         .onChange(of: interaction) { _, new in
             scene.interaction = new
+        }
+        .onChange(of: interactionAmount) { _, new in
+            scene.interactionAmount = new
         }
     }
 }
