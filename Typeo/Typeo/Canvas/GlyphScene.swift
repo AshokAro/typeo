@@ -116,6 +116,10 @@ final class GlyphScene: SKScene {
     /// from the same touches on the live canvas.
     private var orderedIds: [UUID] = []
     private var restPositions: [UUID: CGPoint] = [:]
+    /// Collision proxies that follow each letter's shape, in sprite-local points.
+    private var glyphShapes: [UUID: [GlyphCircle]] = [:]
+    /// Radius of the circle enclosing a glyph's whole shape, for the broad phase.
+    private var glyphBounds: [UUID: CGFloat] = [:]
     /// The per-glyph transform last pushed from the model. Only a CHANGE is written to
     /// the nodes: re-applying on every appearance update would snap a held drop back
     /// to the grid the moment an unrelated colour changed.
@@ -168,6 +172,8 @@ final class GlyphScene: SKScene {
         glyphNodes.removeAll()
         fieldNodes.removeAll()
         orderedIds.removeAll()
+        glyphShapes.removeAll()
+        glyphBounds.removeAll()
         restPositions.removeAll()
         appliedTransforms.removeAll()
 
@@ -253,6 +259,11 @@ final class GlyphScene: SKScene {
 
             glyphNodes[glyph.id] = node
             orderedIds.append(glyph.id)
+            let shape = GlyphShapeFactory.circles(for: glyph)
+            glyphShapes[glyph.id] = shape
+            glyphBounds[glyph.id] = shape.reduce(0) {
+                max($0, hypot($1.centre.x - node.size.width / 2, $1.centre.y) + $1.radius)
+            }
             fillNode.addChild(node)
 
             // The field copy is always white: the field shader colours it, so a text
@@ -539,45 +550,90 @@ final class GlyphScene: SKScene {
         CGPoint(x: node.position.x + node.size.width * node.xScale / 2, y: node.position.y)
     }
 
-    private func collisionRadius(_ node: SKSpriteNode) -> CGFloat {
-        // The narrow dimension: a letter's texture is its advance box, so half the
-        // WIDER side would have neighbours shoving each other apart at rest.
-        min(node.size.width * node.xScale, node.size.height * node.yScale) * 0.5
+    /// A glyph's shape circles placed in the scene, following the node's rotation and
+    /// scale.
+    private func worldCircles(_ id: UUID) -> [(centre: CGPoint, radius: CGFloat)] {
+        guard let node = glyphNodes[id], let shape = glyphShapes[id] else { return [] }
+        let scale = node.xScale
+        let angle = node.zRotation
+        let cosine = cos(angle)
+        let sine = sin(angle)
+        return shape.map { circle in
+            let x = circle.centre.x * scale
+            let y = circle.centre.y * scale
+            return (
+                centre: CGPoint(
+                    x: node.position.x + x * cosine - y * sine,
+                    y: node.position.y + x * sine + y * cosine
+                ),
+                radius: circle.radius * scale
+            )
+        }
+    }
+
+    private func broadRadius(_ id: UUID) -> CGFloat {
+        guard let node = glyphNodes[id] else { return 0 }
+        return (glyphBounds[id] ?? min(node.size.width, node.size.height) / 2) * node.xScale
+    }
+
+    /// Overlaps shallower than this fraction of the pair's reach are left alone.
+    /// Letters at rest graze each other, and resolving those pushed a word apart the
+    /// moment collision was switched on.
+    private static let collisionSlack: CGFloat = 0.08
+
+    /// The deepest overlap between two glyphs' shapes, if they touch at all.
+    private func deepestOverlap(
+        _ a: [(centre: CGPoint, radius: CGFloat)],
+        _ b: [(centre: CGPoint, radius: CGFloat)]
+    ) -> (normal: CGVector, depth: CGFloat)? {
+        var bestDepth: CGFloat = 0
+        var bestNormal = CGVector(dx: 1, dy: 0)
+
+        for first in a {
+            for second in b {
+                let dx = second.centre.x - first.centre.x
+                let dy = second.centre.y - first.centre.y
+                let reach = first.radius + second.radius
+                var distance = hypot(dx, dy)
+                guard distance < reach * (1 - Self.collisionSlack) else { continue }
+                let depth = reach - distance
+                guard depth > bestDepth else { continue }
+                // Coincident centres have no normal to push along. Pick a fixed one
+                // rather than a random one, so the result is repeatable.
+                if distance < 0.001 { distance = 0.001 }
+                bestDepth = depth
+                bestNormal = CGVector(dx: dx / distance, dy: dy / distance)
+            }
+        }
+        return bestDepth > 0 ? (bestNormal, bestDepth) : nil
     }
 
     private func resolveCollisions() {
         guard collisionsEnabled, orderedIds.count > 1 else { return }
 
         for _ in 0..<3 {
+            // Placed once per pass and reused across every pair in it.
+            let placed = orderedIds.map { worldCircles($0) }
+            let centres = orderedIds.map { glyphNodes[$0].map(collisionCentre) ?? .zero }
+            let radii = orderedIds.map { broadRadius($0) }
+
             for i in 0..<(orderedIds.count - 1) {
                 guard let a = glyphNodes[orderedIds[i]] else { continue }
                 for j in (i + 1)..<orderedIds.count {
                     guard let b = glyphNodes[orderedIds[j]] else { continue }
 
-                    let ca = collisionCentre(a)
-                    let cb = collisionCentre(b)
-                    let reach = collisionRadius(a) + collisionRadius(b)
+                    // Broad phase: most pairs are nowhere near each other, and the
+                    // shape test is 30-odd circle comparisons.
+                    let span = hypot(centres[j].x - centres[i].x, centres[j].y - centres[i].y)
+                    guard span < radii[i] + radii[j] else { continue }
 
-                    var dx = cb.x - ca.x
-                    var dy = cb.y - ca.y
-                    var distance = hypot(dx, dy)
-                    guard distance < reach else { continue }
+                    guard let hit = deepestOverlap(placed[i], placed[j]) else { continue }
+                    let push = hit.depth * 0.5
 
-                    // Exactly coincident centres have no normal to push along. Pick a
-                    // fixed one rather than a random one, so the result is repeatable.
-                    if distance < 0.001 {
-                        dx = 1
-                        dy = 0
-                        distance = 0.001
-                    }
-                    let nx = dx / distance
-                    let ny = dy / distance
-                    let push = (reach - distance) * 0.5
-
-                    a.position.x -= nx * push
-                    a.position.y -= ny * push
-                    b.position.x += nx * push
-                    b.position.y += ny * push
+                    a.position.x -= hit.normal.dx * push
+                    a.position.y -= hit.normal.dy * push
+                    b.position.x += hit.normal.dx * push
+                    b.position.y += hit.normal.dy * push
 
                     damp(orderedIds[i])
                     damp(orderedIds[j])
@@ -589,7 +645,7 @@ final class GlyphScene: SKScene {
         // through the floor the gravity pass had just settled it on.
         for id in orderedIds {
             guard let node = glyphNodes[id] else { continue }
-            let radius = collisionRadius(node)
+            let radius = broadRadius(id)
             let centre = collisionCentre(node)
             let clampedX = min(max(centre.x, radius), size.width - radius)
             let clampedY = min(max(centre.y, radius), size.height - radius)
@@ -660,18 +716,17 @@ final class GlyphScene: SKScene {
     /// Pairs whose collision proxies currently overlap. 0 means nothing is stacked.
     var debugOverlappingPairs: Int {
         var count = 0
+        let placed = orderedIds.map { worldCircles($0) }
         for i in 0..<max(0, orderedIds.count - 1) {
-            guard let a = glyphNodes[orderedIds[i]] else { continue }
-            for j in (i + 1)..<orderedIds.count {
-                guard let b = glyphNodes[orderedIds[j]] else { continue }
-                let ca = collisionCentre(a)
-                let cb = collisionCentre(b)
-                if hypot(cb.x - ca.x, cb.y - ca.y) < collisionRadius(a) + collisionRadius(b) - 0.5 {
-                    count += 1
-                }
+            for j in (i + 1)..<orderedIds.count where deepestOverlap(placed[i], placed[j])?.depth ?? 0 > 0.5 {
+                count += 1
             }
         }
         return count
+    }
+
+    var debugShapeCircleCounts: [Int] {
+        orderedIds.map { glyphShapes[$0]?.count ?? 0 }
     }
 
     /// Node positions in laid-out order, for comparing two runs of the same input.
@@ -943,7 +998,7 @@ enum BackgroundTextureFactory {
         case let .solid(rgba):
             return SKSpriteNode(color: UIColor(rgba.color), size: size)
 
-        case .linearGradient:
+        case .linearGradient, .image:
             return SKSpriteNode(texture: texture(for: background, size: size), size: size)
         }
     }
@@ -952,6 +1007,12 @@ enum BackgroundTextureFactory {
     /// background, and a solid colour node has no texture to sample.
     static func texture(for background: Background, size: CGSize) -> SKTexture {
         switch background {
+        case let .image(id):
+            // A missing file falls back to black rather than an empty canvas: the photo
+            // lives outside the composition, so it can go away independently.
+            return BackgroundImageStore.texture(for: id, size: size)
+                ?? texture(for: .solid(.black), size: size)
+
         case let .solid(rgba):
             let format = UIGraphicsImageRendererFormat.default()
             format.scale = 1

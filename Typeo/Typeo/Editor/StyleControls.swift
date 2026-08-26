@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 /// The layer every control in the style sheet is addressing. Fill and effect both
 /// follow it, so the tab is chosen once at the top rather than per section.
@@ -52,31 +53,86 @@ struct FillControls: View {
         target == .text ? store.textGradient : store.backgroundGradient
     }
 
-    private var isGradient: Bool { currentGradient != nil }
+    private var imageID: String? {
+        target == .background ? store.backgroundImageID : nil
+    }
+
+    /// A photo is a BACKGROUND fill only — the text keeps solid and gradient.
+    private enum Mode: Hashable { case solid, gradient, image }
+
+    private var mode: Mode {
+        if imageID != nil { return .image }
+        return currentGradient != nil ? .gradient : .solid
+    }
+
+    @State private var photo: PhotosPickerItem?
 
     var body: some View {
         Group {
             Picker("Fill", selection: Binding(
-                get: { isGradient },
-                set: { wantsGradient in
-                    if wantsGradient { applyGradient(currentGradient ?? .sunset) }
-                    else { applySolid() }
+                get: { mode },
+                set: { newMode in
+                    switch newMode {
+                    case .solid:    applySolid()
+                    case .gradient: applyGradient(currentGradient ?? .sunset)
+                    case .image:    break   // the picker below chooses the photo
+                    }
                 }
             )) {
-                Text("Solid").tag(false)
-                Text("Gradient").tag(true)
+                Text("Solid").tag(Mode.solid)
+                Text("Gradient").tag(Mode.gradient)
+                if target == .background {
+                    Text("Photo").tag(Mode.image)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            if isGradient {
+            switch mode {
+            case .gradient:
                 gradientPresets
-                ColorPicker("From", selection: stopBinding(index: 0), supportsOpacity: false)
-                ColorPicker("To", selection: stopBinding(index: 1), supportsOpacity: false)
+                ColorWell(title: "From", color: stopBinding(index: 0))
+                ColorWell(title: "To", color: stopBinding(index: 1))
                 angleRow
-            } else {
+            case .solid:
                 swatchGrid
-                ColorPicker("Custom", selection: colorBinding, supportsOpacity: false)
+                ColorWell(title: "Custom", color: colorBinding)
+                if target == .background { photoPicker(label: "Use a photo") }
+            case .image:
+                photoRow
+                photoPicker(label: "Replace photo")
+            }
+        }
+    }
+
+    private func photoPicker(label: String) -> some View {
+        PhotosPicker(selection: $photo, matching: .images, photoLibrary: .shared()) {
+            Label(label, systemImage: "photo.on.rectangle")
+        }
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      let image = UIImage(data: data) else { return }
+                store.setBackgroundImage(image)
+                photo = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var photoRow: some View {
+        if let id = imageID, let image = BackgroundImageStore.image(for: id) {
+            HStack(spacing: 12) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 64, height: 44)
+                    .clipShape(.rect(cornerRadius: 6))
+                Text("Effects apply on top of the photo")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
         }
     }

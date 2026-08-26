@@ -93,6 +93,7 @@ struct StylePreset: Identifiable, Hashable {
         switch background {
         case let .solid(rgba): rgba.color
         case let .linearGradient(colors, _): colors.first?.color ?? .black
+        case .image: .black
         }
     }
 }

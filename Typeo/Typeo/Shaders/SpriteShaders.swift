@@ -43,8 +43,14 @@ enum SpriteShaders {
             SKUniform(name: "u_amount", float: Float(effect.intensity)),
             SKUniform(name: "u_time_offset", float: 0),
             SKUniform(name: "u_secondary", float: Float(effect.resolvedSecondary)),
+            SKUniform(name: "u_tertiary", float: Float(effect.resolvedTertiary)),
+            SKUniform(name: "u_variant", float: Float(effect.resolvedVariant)),
             SKUniform(name: "u_texel", vectorFloat2: vector_float2(0.001, 0.001)),
         ]
+        // The rain needs real characters, and a fragment shader cannot draw type.
+        if effect.kind == .matrix {
+            shader.addUniform(SKUniform(name: "u_glyphs", texture: MatrixGlyphAtlas.texture))
+        }
         return shader
     }
 
@@ -100,13 +106,15 @@ enum SpriteShaders {
         case .neon:
             return Field(
                 shader: fieldShader(neonField, effect),
-                blurRadius: 10 + effect.intensity * 46,
+                // Spread is its own control: glow strength and glow SIZE are different
+                // decisions.
+                blurRadius: 6 + effect.resolvedTertiary * 78,
                 additive: true
             )
         case .thermal:
             return Field(
                 shader: fieldShader(heatField, effect),
-                blurRadius: 12 + effect.intensity * 44,
+                blurRadius: 8 + effect.resolvedSecondary * 76,
                 additive: false
             )
         default:
@@ -119,6 +127,7 @@ enum SpriteShaders {
         shader.uniforms = [
             SKUniform(name: "u_amount", float: Float(effect.intensity)),
             SKUniform(name: "u_secondary", float: Float(effect.resolvedSecondary)),
+            SKUniform(name: "u_tertiary", float: Float(effect.resolvedTertiary)),
         ]
         return shader
     }
@@ -183,7 +192,7 @@ enum SpriteShaders {
     void main() {
         vec2 uv = v_tex_coord;
         vec4 base = texture2D(u_texture, uv);
-        float radius = 6.0 + u_amount * 52.0;
+        float radius = (6.0 + u_amount * 52.0) * (0.35 + u_secondary * 1.65);
 
         vec4 accumulated = vec4(0.0);
         float weightSum = 0.0;
@@ -203,26 +212,65 @@ enum SpriteShaders {
     static let heat = helpers + """
     void main() {
         vec2 uv = v_tex_coord;
-        float t = u_time + u_time_offset;
+        float t = (u_time + u_time_offset) * (0.3 + u_tertiary * 2.0);
         float wobble = sin(uv.y * 34.0 + t * 2.1) * cos(uv.x * 21.0 - t * 1.4);
         float drift = valueNoise(vec2(uv.x * 9.0, uv.y * 9.0 - t * 0.6)) - 0.5;
         vec2 offset = vec2(wobble * 18.0 + drift * 26.0, drift * 10.0) * u_amount * u_texel;
-        gl_FragColor = texture2D(u_texture, uv + offset);
+
+        vec4 warped = texture2D(u_texture, uv + offset);
+        float a = max(warped.a, 0.001);
+        vec3 rgb = warped.rgb / a;
+
+        // Temperature: cold air at one end, a hot flame at the other.
+        vec3 cool = vec3(0.52, 0.74, 1.00);
+        vec3 hot = vec3(1.00, 0.58, 0.24);
+        vec3 tint = mix(cool, hot, u_secondary);
+        vec3 outc = mix(rgb, clamp(rgb * tint * 1.25, 0.0, 1.0), u_amount);
+        gl_FragColor = vec4(outc * warped.a, warped.a);
     }
     """
 
+    /// Four kinds of noise, selected by `u_variant`. Blended by weights rather than
+    /// branched: an if/else chain is one of the things that silently stops an SKShader
+    /// compiling.
     static let noise = helpers + """
     void main() {
         vec2 uv = v_tex_coord;
         float t = u_time + u_time_offset;
         vec4 color = texture2D(u_texture, uv);
-        vec2 p = uv / u_texel;
-        float g = valueNoise(p * 1.7 + vec2(t * 37.0, t * 61.0));
-        float speckle = step(0.965 - u_amount * 0.09, hash21(p + t * 13.0));
-        float shift = (g - 0.5) * 0.85 * u_amount;
-        color.rgb = clamp(color.rgb + shift * color.a, 0.0, color.a);
-        color.rgb = clamp(color.rgb + speckle * u_amount * 0.6 * color.a, 0.0, color.a);
-        gl_FragColor = color;
+        float a = max(color.a, 0.001);
+        vec3 rgb = color.rgb / a;
+
+        // Size: coarse grain at one end, fine at the other.
+        float grain = mix(6.0, 0.5, u_secondary);
+        vec2 p = (uv / u_texel) / max(grain, 0.05);
+
+        float w0 = step(abs(u_variant - 0.0), 0.4);
+        float w1 = step(abs(u_variant - 1.0), 0.4);
+        float w2 = step(abs(u_variant - 2.0), 0.4);
+        float w3 = step(abs(u_variant - 3.0), 0.4);
+
+        // Grain: soft film noise.
+        vec3 film = vec3((valueNoise(p * 1.7 + vec2(t * 37.0, t * 61.0)) - 0.5) * 0.9);
+
+        // Speckle: sparse hot pixels.
+        float dots = step(0.978 - u_amount * 0.06, hash21(p + t * 13.0));
+        vec3 speckle = vec3(dots) * 0.9;
+
+        // Static: television scan lines, jumping every frame.
+        float lineNoise = hash21(vec2(floor(p.y * 0.5), floor(t * 24.0)));
+        vec3 stat = vec3((lineNoise - 0.5) * 1.4);
+
+        // Colour: the channels disagree.
+        vec3 chroma = vec3(
+            hash21(p + vec2(t * 11.0, 0.0)),
+            hash21(p + vec2(0.0, t * 17.0)),
+            hash21(p + vec2(t * 7.0, t * 5.0))
+        ) - 0.5;
+
+        vec3 shift = film * w0 + speckle * w1 + stat * w2 + chroma * w3;
+        vec3 outc = clamp(rgb + shift * u_amount, 0.0, 1.0);
+        gl_FragColor = vec4(outc * color.a, color.a);
     }
     """
 
@@ -230,7 +278,7 @@ enum SpriteShaders {
     void main() {
         vec2 uv = v_tex_coord;
         float t = u_time + u_time_offset;
-        float band = floor(uv.y / (26.0 * u_texel.y));
+        float band = floor(uv.y / (mix(70.0, 8.0, u_secondary) * u_texel.y));
         float jump = hash21(vec2(band, floor(t * 12.0)));
         float tear = (jump - 0.5) * 90.0 * u_amount * step(0.72, jump);
         vec2 shifted = uv + vec2(tear * u_texel.x, 0.0);
@@ -278,6 +326,7 @@ extension SpriteShaders {
 
         vec3 metal = mix(vec3(0.14, 0.16, 0.21), vec3(0.88, 0.92, 1.0), flow);
         metal = clamp(metal + sheen * 0.95, 0.0, 1.0);
+        metal = clamp((metal - 0.5) * (0.55 + u_tertiary * 1.9) + 0.5, 0.0, 1.0);
 
         vec3 outc = mix(src.rgb / a, metal, u_amount);
         gl_FragColor = vec4(outc * src.a, src.a);
@@ -334,7 +383,7 @@ extension SpriteShaders {
         // A touch of chromatic separation, strongest where the lens bends hardest.
         float red = texture2D(u_background, clamp(uv - bend * 1.22, 0.0, 1.0)).r;
         vec3 behind = texture2D(u_background, lens).rgb;
-        vec3 refracted = mix(vec3(red, behind.g, behind.b), frost, 0.5);
+        vec3 refracted = mix(vec3(red, behind.g, behind.b), frost, u_secondary);
 
         // Body: brighter and slightly whitened where the glass is thick.
         vec3 body = mix(refracted, vec3(1.0), 0.12 * u_amount + 0.14 * interior * u_amount);
@@ -354,6 +403,9 @@ extension SpriteShaders {
     }
     """
 
+    /// Matrix rain, with actual characters from `MatrixGlyphAtlas`. Cells are FIXED to
+    /// the canvas and the brightness falls down them — scrolling a texture instead makes
+    /// the glyphs slide, which the film never does.
     static let matrix = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
@@ -361,24 +413,49 @@ extension SpriteShaders {
         vec3 rgb = src.rgb / a;
 
         vec2 p = v_tex_coord / u_texel;
-        float cell = 24.0;
-        float column = floor(p.x / cell);
-        float speed = (140.0 + hash21(vec2(column, 3.7)) * 320.0) * (0.35 + u_secondary * 1.3);
-        float row = floor((p.y + u_time * speed) / cell);
-        float lit = step(0.42, hash21(vec2(column, row)));
-        float trail = fract((p.y + u_time * speed) / cell);
+        float cell = mix(52.0, 17.0, u_tertiary);
+        float col = floor(p.x / cell);
+        float row = floor(p.y / cell);
+        float rows = (1.0 / u_texel.y) / cell;
 
-        vec3 rain = vec3(0.10, 1.0, 0.32) * lit * (0.35 + 0.65 * trail);
+        float t = u_time + u_time_offset;
+        float speed = (1.5 + hash21(vec2(col, 3.7)) * 5.5) * (0.25 + u_secondary * 2.4);
+        // No gap in the cycle: the rain is only visible INSIDE the letters, so a column
+        // whose head is off-screen leaves a hole in the word.
+        float span = rows;
+        float head = mod(t * speed + hash21(vec2(col, 9.1)) * span, span);
+
+        // Rain falls down the screen; SpriteKit's y grows up.
+        float depth = mod(head - (rows - row) + span, span);
+        // A long decaying tail over a dim ambient floor, so every cell still reads as
+        // a character rather than going black.
+        float tail = max(exp(-depth * 0.16), 0.30);
+        float leading = smoothstep(1.4, 0.0, depth);
+
+        // Each cell swaps character every so often, on its own offset.
+        float flick = floor(t * 5.0 + hash21(vec2(col, row)) * 22.0);
+        float index = floor(hash21(vec2(col * 7.13 + flick, row * 3.31)) * 64.0);
+        vec2 cellUV = vec2(fract(p.x / cell), fract(p.y / cell));
+        vec2 atlasUV = (vec2(mod(index, 8.0), floor(index / 8.0)) + cellUV) * 0.125;
+        float glyph = texture2D(u_glyphs, atlasUV).a;
+
+        // Brightness, not just on/off: the leading character is near-white and the
+        // trail decays through green.
+        vec3 green = vec3(0.16, 1.00, 0.36);
+        vec3 rain = mix(green * tail * 1.35, vec3(0.88, 1.00, 0.92), leading * 0.9) * glyph;
+
         vec3 outc = mix(rgb, rain, u_amount);
-        gl_FragColor = vec4(outc * src.a, src.a);
+        gl_FragColor = vec4(clamp(outc, 0.0, 1.0) * src.a, src.a);
     }
     """
 
     static let liquify = helpers + """
     void main() {
         vec2 uv = v_tex_coord;
-        float n1 = valueNoise(uv * 4.0 + vec2(u_time * 0.28, 0.0));
-        float n2 = valueNoise(uv * 6.0 - vec2(0.0, u_time * 0.21));
+        float scale = mix(1.6, 9.0, u_secondary);
+        float t = (u_time + u_time_offset) * (0.25 + u_tertiary * 2.2);
+        float n1 = valueNoise(uv * scale + vec2(t * 0.28, 0.0));
+        float n2 = valueNoise(uv * scale * 1.5 - vec2(0.0, t * 0.21));
         vec2 warp = vec2(n1 - 0.5, n2 - 0.5) * u_amount * 0.14;
         gl_FragColor = texture2D(u_texture, uv + warp);
     }
@@ -391,7 +468,7 @@ extension SpriteShaders {
         vec3 rgb = src.rgb / a;
 
         vec2 p = v_tex_coord / u_texel;
-        float scale = mix(16.0, 4.0, u_amount);
+        float scale = mix(26.0, 4.0, u_secondary);
         vec2 grid = mod(p, scale) - scale * 0.5;
         float lum = clamp(dot(rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
         float radius = scale * 0.52 * sqrt(lum);
@@ -493,12 +570,25 @@ extension SpriteShaders {
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
         vec2 uv = v_tex_coord;
-        float t = u_time * 0.16;
+        float t = (u_time + u_time_offset) * (0.05 + u_tertiary * 0.34);
 
-        vec2 p1 = vec2(0.28 + 0.20 * sin(t * 1.10), 0.30 + 0.18 * cos(t * 0.90));
-        vec2 p2 = vec2(0.74 + 0.18 * cos(t * 0.80), 0.34 + 0.20 * sin(t * 1.30));
-        vec2 p3 = vec2(0.48 + 0.24 * sin(t * 0.70), 0.76 + 0.16 * cos(t * 1.10));
-        vec2 p4 = vec2(0.20 + 0.16 * cos(t * 1.40), 0.78 + 0.14 * sin(t * 0.60));
+        // The SHAPE was the one fixed thing about this mesh: the same four centres on
+        // the same four paths, with only the palette changing. The variant seeds where
+        // they sit and how they travel, so the dice gives a genuinely different field.
+        float seed = u_variant * 1.6180339;
+        vec2 h1 = vec2(hash21(vec2(seed, 1.0)), hash21(vec2(seed, 2.0)));
+        vec2 h2 = vec2(hash21(vec2(seed, 3.0)), hash21(vec2(seed, 4.0)));
+        vec2 h3 = vec2(hash21(vec2(seed, 5.0)), hash21(vec2(seed, 6.0)));
+        vec2 h4 = vec2(hash21(vec2(seed, 7.0)), hash21(vec2(seed, 8.0)));
+        float r1 = 0.6 + hash21(vec2(seed, 9.0)) * 1.4;
+        float r2 = 0.6 + hash21(vec2(seed, 10.0)) * 1.4;
+        float r3 = 0.6 + hash21(vec2(seed, 11.0)) * 1.4;
+        float r4 = 0.6 + hash21(vec2(seed, 12.0)) * 1.4;
+
+        vec2 p1 = vec2(0.16 + 0.68 * h1.x + 0.16 * sin(t * r1), 0.16 + 0.68 * h1.y + 0.15 * cos(t * r2));
+        vec2 p2 = vec2(0.16 + 0.68 * h2.x + 0.15 * cos(t * r2), 0.16 + 0.68 * h2.y + 0.16 * sin(t * r3));
+        vec2 p3 = vec2(0.16 + 0.68 * h3.x + 0.17 * sin(t * r3), 0.16 + 0.68 * h3.y + 0.14 * cos(t * r4));
+        vec2 p4 = vec2(0.16 + 0.68 * h4.x + 0.14 * cos(t * r4), 0.16 + 0.68 * h4.y + 0.17 * sin(t * r1));
 
         // Rotate the palette's HUE rather than cross-fading between two palettes.
         // Blending opposite hues 50/50 lands on grey, which is why the field washed out
@@ -537,7 +627,7 @@ extension SpriteShaders {
         vec3 base = mix(top, bottom, smoothstep(0.0, 1.0, sweep));
 
         vec2 p = uv / u_texel;
-        float grain = hash21(p * 0.9 + vec2(t * 31.0, t * 17.0)) - 0.5;
+        float grain = hash21(p * mix(2.4, 0.18, u_tertiary) + vec2(t * 31.0, t * 17.0)) - 0.5;
         base = clamp(base + grain * u_secondary * 0.55, 0.0, 1.0);
 
         vec3 outc = mix(src.rgb / max(src.a, 0.001), base, u_amount);
@@ -553,7 +643,8 @@ extension SpriteShaders {
         float a = max(src.a, 0.001);
         vec3 rgb = src.rgb / a;
 
-        vec2 p = floor(mod(v_tex_coord / u_texel, 4.0));
+        float cellScale = mix(1.0, 5.0, u_tertiary);
+        vec2 p = floor(mod(floor(v_tex_coord / u_texel / cellScale), 4.0));
         float index = p.x + p.y * 4.0;
 
         // 4x4 Bayer matrix, unrolled: no array indexing in this GLSL subset.

@@ -252,12 +252,12 @@ final class CompositionStore {
     // which looked like chaos rather than a control.
     //
     // Two axes, deliberately separate:
-    //   · scatter — position and rotation, applied to EVERY letter. A shuffle with the
-    //     slider at zero still throws the block around without touching the typeface.
-    //   · restyle — typeface and size, applied to the fraction the slider names.
+    //   · tilt — a slight rotation on EVERY letter. A shuffle with the slider at zero
+    //     still tips the line without touching the typeface. It does NOT move letters:
+    //     displacing them broke the word up, and that is what Attract is for.
+    //   · restyle — typeface and a small size change, on the fraction the slider names.
 
-    private struct LiveScatter {
-        var offset: CGPoint
+    private struct LiveTilt {
         var rotation: Double
     }
 
@@ -268,7 +268,7 @@ final class CompositionStore {
 
     private var liveBaseline: [Glyph]?
     private var liveOrder: [Int] = []
-    private var liveScatter: [Int: LiveScatter] = [:]
+    private var liveTilt: [Int: LiveTilt] = [:]
     private var liveRestyle: [Int: LiveRestyle] = [:]
 
     var isLiveJumbling: Bool { liveBaseline != nil }
@@ -280,20 +280,13 @@ final class CompositionStore {
         liveBaseline = composition.glyphs
         let eligible = composition.glyphs.indices.filter { composition.glyphs[$0].role == .glyph }
         liveOrder = eligible.shuffled()
-        liveScatter = [:]
+        liveTilt = [:]
         liveRestyle = [:]
         for index in eligible {
-            let reach = composition.glyphs[index].size
-            liveScatter[index] = LiveScatter(
-                offset: CGPoint(
-                    x: CGFloat.random(in: -reach * 0.45...reach * 0.45),
-                    y: CGFloat.random(in: -reach * 0.35...reach * 0.35)
-                ),
-                rotation: Double.random(in: -24...24)
-            )
+            liveTilt[index] = LiveTilt(rotation: Double.random(in: -9...9))
             liveRestyle[index] = LiveRestyle(
                 font: FontCatalog.all.randomElement()?.glyphFont ?? style.font,
-                size: (style.size * CGFloat.random(in: 0.6...1.5)).rounded()
+                size: (style.size * CGFloat.random(in: 0.88...1.14)).rounded()
             )
         }
     }
@@ -304,10 +297,9 @@ final class CompositionStore {
         guard let baseline = liveBaseline else { return }
         composition.glyphs = baseline
 
-        // Scatter every letter, whatever the amount says.
-        for (index, scatter) in liveScatter where composition.glyphs.indices.contains(index) {
-            composition.glyphs[index].positionOffset = scatter.offset
-            composition.glyphs[index].rotation = scatter.rotation
+        // Tilt every letter, whatever the amount says. Position is left alone.
+        for (index, tilt) in liveTilt where composition.glyphs.indices.contains(index) {
+            composition.glyphs[index].rotation = tilt.rotation
         }
 
         let fraction = min(max(amount, 0), 1)
@@ -322,7 +314,7 @@ final class CompositionStore {
     func endLiveJumble() {
         liveBaseline = nil
         liveOrder = []
-        liveScatter = [:]
+        liveTilt = [:]
         liveRestyle = [:]
     }
 
@@ -382,9 +374,25 @@ final class CompositionStore {
     }
 
     func setEffectKind(_ kind: ShaderEffect.Kind) {
+        checkpoint("effect")
         composition.globalShader.kind = kind
         if kind != .none, composition.globalShader.intensity == 0 {
             composition.globalShader.intensity = 0.5
+        }
+    }
+
+    /// One way in for every effect parameter on either layer. Each kind declares which
+    /// controls it offers (`ShaderEffect.controls`), so the panel does not need a
+    /// setter per slider.
+    func updateEffect(background: Bool, coalesceFor window: TimeInterval = 0.8,
+                      _ body: (inout ShaderEffect) -> Void) {
+        checkpoint(background ? "bgEffect" : "effect", coalesceFor: window)
+        if background {
+            var effect = composition.backgroundShader ?? ShaderEffect(kind: .none, intensity: 0.6)
+            body(&effect)
+            composition.backgroundShader = effect.kind == .none ? nil : effect
+        } else {
+            body(&composition.globalShader)
         }
     }
 
@@ -463,6 +471,14 @@ final class CompositionStore {
         }
         return nil
     }
+
+    /// Stores the picked photo outside the model and points the background at it.
+    func setBackgroundImage(_ image: UIImage) {
+        guard let id = BackgroundImageStore.save(image) else { return }
+        setBackground(.image(id: id))
+    }
+
+    var backgroundImageID: String? { composition.background.imageID }
 
     func setBackgroundGradient(_ gradient: GradientPaint?) {
         if let gradient {

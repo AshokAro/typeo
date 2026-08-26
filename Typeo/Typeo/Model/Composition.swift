@@ -123,8 +123,17 @@ struct GradientPaint: Codable, Hashable {
 enum Background: Codable, Hashable {
     case solid(RGBAColor)
     case linearGradient(colors: [RGBAColor], angleDegrees: Double)
+    /// A photo, referenced by id — the pixels live in BackgroundImageStore, never in
+    /// the JSON. Adding a case is additive: files written before it still decode,
+    /// because Codable keys an enum on the case name.
+    case image(id: String)
 
     static let defaultBackground = Background.solid(.ink)
+
+    var imageID: String? {
+        if case let .image(id) = self { return id }
+        return nil
+    }
 }
 
 // MARK: - Font
@@ -171,6 +180,10 @@ struct ShaderEffect: Codable, Hashable {
     /// Second parameter for shaders that need one (motion-blur angle, matrix speed).
     /// Optional for the same decode reason as every other v6 field.
     var secondary: Double?
+    /// Third continuous parameter. Optional, so files written before it decode.
+    var tertiary: Double?
+    /// A DISCRETE choice — noise type, mesh shape. Optional for the same reason.
+    var variant: Int?
 
     enum Kind: String, Codable, CaseIterable, Identifiable, Hashable {
         case none, bloom, heat, noise, glitch
@@ -247,29 +260,91 @@ struct ShaderEffect: Codable, Hashable {
     static let none = ShaderEffect(kind: .none, intensity: 0)
 
     var resolvedSecondary: Double { secondary ?? 0.5 }
+    var resolvedTertiary: Double { tertiary ?? 0.5 }
+    var resolvedVariant: Int { variant ?? 0 }
 
-    /// Whether the second slider is meaningful for this kind.
-    var usesSecondary: Bool {
+    /// The sliders this effect actually offers. Every effect has an intensity; the
+    /// rest are per-effect, which is why the panel builds itself from this rather than
+    /// hardcoding one "secondary" row.
+    var controls: [EffectControl] {
         switch kind {
-        case .motionBlur, .matrix, .chrome, .neon, .gemSmoke,
-             .meshGradient, .grainGradient, .dithering:
-            true
-        default: false
+        case .none:       []
+        case .bloom:      [.init(.intensity, "Glow"), .init(.secondary, "Spread")]
+        case .heat:       [.init(.intensity, "Distortion"), .init(.secondary, "Temperature"),
+                           .init(.tertiary, "Speed")]
+        case .noise:      [.init(.intensity, "Amount"), .init(.secondary, "Size")]
+        case .glitch:     [.init(.intensity, "Amount"), .init(.secondary, "Slice")]
+        case .chrome:     [.init(.intensity, "Amount"), .init(.secondary, "Flow"),
+                           .init(.tertiary, "Contrast")]
+        case .glass:      [.init(.intensity, "Refraction"), .init(.secondary, "Frost")]
+        case .matrix:     [.init(.intensity, "Amount"), .init(.secondary, "Speed"),
+                           .init(.tertiary, "Density")]
+        case .liquify:    [.init(.intensity, "Amount"), .init(.secondary, "Scale"),
+                           .init(.tertiary, "Speed")]
+        case .halftone:   [.init(.intensity, "Amount"), .init(.secondary, "Dot size")]
+        case .motionBlur: [.init(.intensity, "Length"), .init(.secondary, "Angle")]
+        case .thermal:    [.init(.intensity, "Heat"), .init(.secondary, "Spread")]
+        case .neon:       [.init(.intensity, "Glow"), .init(.secondary, "Hue"),
+                           .init(.tertiary, "Spread")]
+        case .gemSmoke:   [.init(.intensity, "Amount"), .init(.secondary, "Facets")]
+        case .meshGradient:  [.init(.intensity, "Amount"), .init(.secondary, "Palette"),
+                              .init(.tertiary, "Drift")]
+        case .grainGradient: [.init(.intensity, "Amount"), .init(.secondary, "Grain"),
+                              .init(.tertiary, "Scale")]
+        case .dithering:     [.init(.intensity, "Amount"), .init(.secondary, "Levels"),
+                              .init(.tertiary, "Scale")]
         }
     }
 
-    var secondaryLabel: String {
+    /// Discrete choices, offered as a segmented row (a type) or a dice (a shape).
+    var variants: EffectVariants? {
         switch kind {
-        case .motionBlur:    "Angle"
-        case .matrix:        "Speed"
-        case .chrome:        "Flow"
-        case .neon:          "Hue"
-        case .gemSmoke:      "Facets"
-        case .meshGradient:  "Palette"
-        case .grainGradient: "Grain"
-        case .dithering:     "Levels"
-        default:          ""
+        case .noise:
+            EffectVariants(label: "Type", names: ["Grain", "Speckle", "Static", "Colour"])
+        case .meshGradient:
+            // Shapes are generated, not enumerated: the dice reseeds where the colour
+            // centres sit, which is the only thing that was fixed about the mesh.
+            EffectVariants(label: "Shape", count: 24, isRandomised: true)
+        default:
+            nil
         }
+    }
+}
+
+/// One slider on the effect panel.
+struct EffectControl: Identifiable, Hashable {
+    enum Slot: String, Hashable { case intensity, secondary, tertiary }
+
+    var slot: Slot
+    var label: String
+
+    init(_ slot: Slot, _ label: String) {
+        self.slot = slot
+        self.label = label
+    }
+
+    var id: String { slot.rawValue }
+}
+
+/// A discrete parameter: either a named set, or a seed to roll.
+struct EffectVariants: Hashable {
+    var label: String
+    var names: [String]?
+    var count: Int
+    var isRandomised: Bool
+
+    init(label: String, names: [String]) {
+        self.label = label
+        self.names = names
+        self.count = names.count
+        self.isRandomised = false
+    }
+
+    init(label: String, count: Int, isRandomised: Bool) {
+        self.label = label
+        self.names = nil
+        self.count = count
+        self.isRandomised = isRandomised
     }
 }
 

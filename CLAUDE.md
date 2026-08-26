@@ -207,10 +207,11 @@ only what happens in between.
 - EVERY interaction slider is bipolar, -1...1, and rests at 0 doing nothing:
   warp = pucker/bloat, attract = push/pull, gravity = float up/fall down.
   Shuffle stays 0...1 because a negative percentage is meaningless.
-- Shuffle has TWO axes. Tapping it SCATTERS every letter (position + rotation) and the
-  slider says how many additionally get a new TYPEFACE and size — so a shuffle at 0
-  still throws the block around without touching the type. The readout says "restyled"
-  for that reason.
+- Shuffle has TWO axes. Tapping it TILTS every letter slightly and the slider says how
+  many additionally get a new TYPEFACE and a small size change — so a shuffle at 0
+  still tips the line without touching the type. The readout says "restyled" for that
+  reason. Shuffle does NOT move letters: displacing them broke the word up, and moving
+  letters around is what Attract is for.
 - The slider UI must read `mode.amountRange`. Hardcoding `0...1` in `sliderRow` is what
   made pucker and float-up unreachable even though the model already allowed them —
   the range existed and nothing used it.
@@ -329,3 +330,52 @@ xcodebuild -project Typeo/Typeo.xcodeproj \
   recipe instead — lens, frost, rim light, contact shadow.
 - Retiring an effect means hiding it from `Kind.selectable`, never deleting the case.
   Gem Smoke is retired and still renders for anything already saved.
+
+## v6 Stage E notes (current)
+
+### Model additions (both additive, nothing reshaped)
+- `ShaderEffect` gained `tertiary: Double?` and `variant: Int?`, so an effect can offer
+  three sliders and a discrete choice. Optional, so files written before them decode.
+- `Background` gained `case image(id: String)`. Codable keys an enum on its CASE NAME,
+  so adding a case leaves old files decoding unchanged. The pixels are NOT in the
+  model: `BackgroundImageStore` holds the file and the JSON carries an id. Undo
+  snapshots whole Compositions, so embedded image data would be copied on every
+  keystroke.
+
+### Effect controls
+- Each kind declares its own `controls` (and optional `variants`), and the style panel
+  builds itself from that list. One hardcoded "secondary" row could not express
+  "temperature AND intensity AND speed".
+- Adding a uniform to the shared list is free; REFERENCING a uniform that was not
+  supplied is what silently kills an SKShader. `u_tertiary` and `u_variant` are always
+  supplied, `u_glyphs` and `u_background` only for the shaders that name them.
+- A discrete variant is selected in GLSL by weights (`step(abs(u_variant - n), 0.4)`),
+  never an if/else chain — see the Stage C rule about what stops a shader compiling.
+
+### Shaders
+- Matrix rain needs actual CHARACTERS and a fragment shader cannot draw type:
+  `MatrixGlyphAtlas` renders 64 katakana/digits into an 8x8 texture handed over as
+  `u_glyphs`. Cells are FIXED to the canvas and the brightness falls down them —
+  scrolling the sampling coordinate instead makes the glyphs slide, which the film
+  never does.
+- The rain is only visible INSIDE the letters, so it needs a dim ambient floor and no
+  gap in the head cycle; with film-accurate sparseness most of the word was black.
+- The mesh gradient's SHAPE was the one fixed thing about it. The variant seeds where
+  the colour centres sit and how fast they travel; the dice reseeds it.
+
+### Collision
+- `GlyphShapeFactory` rasterises each glyph into a coverage grid (6 rows) and covers the
+  ink with circles, so a T is a crossbar and a stem rather than a disc. Verified by
+  printing the proxy as ASCII — which is also how the bitmap's orientation was checked.
+- Circle radius is exactly half a cell and overlaps shallower than 8% of a pair's reach
+  are ignored. Anything more generous and switching collision on nudged a normally
+  spaced word apart before anything had moved (measured: 7pt of drift).
+- UIKit text drawing needs `UIGraphicsImageRenderer`'s flipped context. Drawing into a
+  bare `CGBitmapContext` renders the glyph upside down, which a coverage grid will
+  happily accept without complaining.
+
+### Elsewhere
+- The widget picker sheet existed and was never presented: `showPicker` was set and
+  nothing observed it. Setting state that no `.sheet` is bound to fails silently.
+- `ColorPicker`'s rainbow-ringed well is replaced by `ColorWell` — the same UIKit
+  picker (`UIColorPickerViewController`) behind a plain swatch of the actual colour.

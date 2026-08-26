@@ -30,22 +30,36 @@ struct StylePanel: View {
         )
     }
 
-    private var intensityBinding: Binding<Double> {
+    private func value(for control: EffectControl) -> Double {
+        switch control.slot {
+        case .intensity: activeEffect.intensity
+        case .secondary: activeEffect.resolvedSecondary
+        case .tertiary:  activeEffect.resolvedTertiary
+        }
+    }
+
+    private func binding(for control: EffectControl) -> Binding<Double> {
         Binding(
-            get: { activeEffect.intensity },
+            get: { value(for: control) },
             set: { newValue in
-                if target == .text { store.setEffectIntensity(newValue) }
-                else { store.setBackgroundEffectIntensity(newValue) }
+                store.updateEffect(background: target == .background) { effect in
+                    switch control.slot {
+                    case .intensity: effect.intensity = newValue
+                    case .secondary: effect.secondary = newValue
+                    case .tertiary:  effect.tertiary = newValue
+                    }
+                }
             }
         )
     }
 
-    private var secondaryBinding: Binding<Double> {
+    private var variantBinding: Binding<Int> {
         Binding(
-            get: { activeEffect.resolvedSecondary },
+            get: { activeEffect.resolvedVariant },
             set: { newValue in
-                if target == .text { store.setEffectSecondary(newValue) }
-                else { store.setBackgroundEffectSecondary(newValue) }
+                store.updateEffect(background: target == .background, coalesceFor: 0) { effect in
+                    effect.variant = newValue
+                }
             }
         )
     }
@@ -79,20 +93,18 @@ struct StylePanel: View {
                             }
                         }
 
-                        if activeEffect.kind != .none {
+                        // Built from the kind's own control list, so an effect that
+                        // needs three knobs gets three.
+                        ForEach(activeEffect.controls) { control in
                             sliderRow(
-                                title: "Intensity",
-                                value: activeEffect.intensity,
-                                binding: intensityBinding
+                                title: control.label,
+                                value: value(for: control),
+                                binding: binding(for: control)
                             )
+                        }
 
-                            if activeEffect.usesSecondary {
-                                sliderRow(
-                                    title: activeEffect.secondaryLabel,
-                                    value: activeEffect.resolvedSecondary,
-                                    binding: secondaryBinding
-                                )
-                            }
+                        if let variants = activeEffect.variants {
+                            variantRow(variants)
                         }
                     }
                 }
@@ -103,6 +115,40 @@ struct StylePanel: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func variantRow(_ variants: EffectVariants) -> some View {
+        if let names = variants.names {
+            Picker(variants.label, selection: variantBinding) {
+                ForEach(Array(names.enumerated()), id: \.offset) { index, name in
+                    Text(name).tag(index)
+                }
+            }
+            .pickerStyle(.segmented)
+        } else {
+            HStack {
+                Text(variants.label)
+                Spacer()
+                Text("\(activeEffect.resolvedVariant + 1) / \(variants.count)")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Button {
+                    // Roll a DIFFERENT one: rolling the same shape twice reads as a
+                    // broken button.
+                    var next = activeEffect.resolvedVariant
+                    while next == activeEffect.resolvedVariant, variants.count > 1 {
+                        next = Int.random(in: 0..<variants.count)
+                    }
+                    variantBinding.wrappedValue = next
+                } label: {
+                    Image(systemName: "die.face.5")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shuffle \(variants.label)")
             }
         }
     }

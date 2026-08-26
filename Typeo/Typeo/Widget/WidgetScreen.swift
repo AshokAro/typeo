@@ -46,6 +46,12 @@ struct WidgetScreen: View {
             }
             .background(Color.black)
             .navigationTitle("Widget")
+            // The picker existed and was never presented: tapping the preview set
+            // showPicker and nothing was listening, so choosing what the widget shows
+            // did nothing at all.
+            .sheet(isPresented: $showPicker) {
+                WidgetPickerSheet(library: library, pins: pins)
+            }
         }
     }
 
