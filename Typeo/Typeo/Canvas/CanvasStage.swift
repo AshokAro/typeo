@@ -2,18 +2,19 @@
 //  CanvasStage.swift
 //  Typeo
 //
-//  On-screen presentation. Scales the reference-size canvas down to fit and drives
-//  the animation clock for time-based shaders. No snapshotting: the shaders run live
-//  on the GPU and ImageRenderer captures the same modifiers at export.
+//  On-screen presentation of the v3 SpriteKit canvas, scaled from the reference size
+//  to fit the available space. The scene is owned by the editor so it can read node
+//  transforms back out before an export or a save.
 //
 
 import SwiftUI
+import SpriteKit
 
 struct CanvasStage: View {
+    let scene: GlyphScene
     let composition: Composition
+    let interaction: GlyphInteraction
     let availableSize: CGSize
-    /// Shared with the editor so an exported frame matches what is on screen.
-    let animationStart: Date
 
     private var reference: CGSize { composition.aspectRatio.referenceSize }
 
@@ -22,29 +23,29 @@ struct CanvasStage: View {
             availableSize.width / reference.width,
             availableSize.height / reference.height
         )
-        return CGSize(width: reference.width * scale, height: reference.height * scale)
+        return CGSize(
+            width: max(1, reference.width * scale),
+            height: max(1, reference.height * scale)
+        )
     }
-
-    private var scale: CGFloat { displaySize.width / reference.width }
 
     var body: some View {
-        Group {
-            if composition.globalShader.kind.isAnimated {
-                TimelineView(.animation) { timeline in
-                    canvas(at: timeline.date.timeIntervalSince(animationStart))
-                }
-            } else {
-                canvas(at: 0)
-            }
-        }
+        SpriteView(
+            scene: scene,
+            preferredFramesPerSecond: 60,
+            options: [.ignoresSiblingOrder]
+        )
         .frame(width: displaySize.width, height: displaySize.height)
         .clipShape(.rect(cornerRadius: 4))
-    }
-
-    private func canvas(at time: Double) -> some View {
-        CompositionCanvas(composition: composition, time: time)
-            .frame(width: reference.width, height: reference.height)
-            .scaleEffect(scale, anchor: .topLeading)
-            .frame(width: displaySize.width, height: displaySize.height, alignment: .topLeading)
+        .onAppear {
+            scene.interaction = interaction
+            scene.update(composition: composition)
+        }
+        .onChange(of: composition) { _, new in
+            scene.update(composition: new)
+        }
+        .onChange(of: interaction) { _, new in
+            scene.interaction = new
+        }
     }
 }

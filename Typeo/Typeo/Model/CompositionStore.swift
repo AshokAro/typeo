@@ -104,6 +104,68 @@ final class CompositionStore {
         )
     }
 
+    // MARK: v3 — per-glyph divergence
+    //
+    // Everything above writes the SAME value to every glyph. Everything below writes
+    // DIFFERENT values to individual glyphs. The model did not change to allow this;
+    // positionOffset, rotation and per-glyph font/size/colour have existed since v1.
+
+    /// Stores the live scene's node transforms back onto the glyphs, so an export or a
+    /// save captures where the letters actually are.
+    func applyTransforms(_ transforms: [UUID: (offset: CGPoint, rotation: Double)]) {
+        for index in composition.glyphs.indices {
+            guard let transform = transforms[composition.glyphs[index].id] else { continue }
+            composition.glyphs[index].positionOffset = transform.offset
+            composition.glyphs[index].rotation = transform.rotation
+        }
+    }
+
+    struct JumbleOptions {
+        var fonts = true
+        var sizes = true
+        var colors = false
+        var rotation = true
+    }
+
+    func jumble(_ options: JumbleOptions = JumbleOptions()) {
+        for index in composition.glyphs.indices where composition.glyphs[index].role == .glyph {
+            if options.fonts, let option = FontCatalog.all.randomElement() {
+                composition.glyphs[index].font = option.glyphFont
+            }
+            if options.sizes {
+                composition.glyphs[index].size = (style.size * CGFloat.random(in: 0.6...1.5))
+                    .rounded()
+            }
+            if options.colors {
+                composition.glyphs[index].color = RGBAColor(
+                    Color(hue: Double.random(in: 0...1), saturation: 0.75, brightness: 1)
+                )
+            }
+            if options.rotation {
+                composition.glyphs[index].rotation = Double.random(in: -20...20)
+            }
+        }
+    }
+
+    /// Puts every glyph back on the single shared style and clears any displacement.
+    func unjumble() {
+        mutateAllGlyphs { glyph in
+            glyph.font = style.font
+            glyph.size = style.size
+            glyph.color = style.color
+            glyph.positionOffset = .zero
+            glyph.rotation = 0
+        }
+    }
+
+    var isJumbled: Bool {
+        let glyphs = composition.glyphs.filter { $0.role == .glyph }
+        guard !glyphs.isEmpty else { return false }
+        return Set(glyphs.map(\.font)).count > 1
+            || Set(glyphs.map(\.size)).count > 1
+            || glyphs.contains { $0.rotation != 0 || $0.positionOffset != .zero }
+    }
+
     // MARK: Composition-level
 
     func setAspectRatio(_ ratio: AspectRatio) {

@@ -50,8 +50,8 @@ only what happens in between.
 - **v2** (DONE): full shader set (bloom, heat, noise, glitch) as Metal shaders on the
   text block. In-app gallery with local persistence of `Composition` as JSON.
   EXCLUDED: per-letter divergence, video, widget.
-- **v3**: rebuild canvas as individually addressable glyph nodes (SpriteKit). Per-letter
-  jumbling. Tap-and-hold effects: inflate, float, gravity/drop. Biggest single lift.
+- **v3** (DONE): canvas rebuilt as individually addressable SpriteKit glyph nodes.
+  Per-letter jumbling. Tap-and-hold: inflate, float, gravity/drop.
   EXCLUDED: video, widget.
 - **v4**: offscreen frame-by-frame render of v3 animations + `AVAssetWriter` encoding.
   EXCLUDED: widget. First candidate to cut if time runs short.
@@ -85,6 +85,26 @@ only what happens in between.
   exported frame is the frame that was on screen. v4's video export is this same call
   in a loop over `time`.
 - Metal shaders need the Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`.
+
+## v3 SpriteKit findings — do not relearn these
+
+- `ImageRenderer` CANNOT capture `SpriteView`; it renders SwiftUI's "unsupported view"
+  placeholder (a yellow square with a red no-entry sign). Export therefore goes through
+  `SKRenderer` into an offscreen Metal texture.
+- `SKView.texture(from:)` ignores `contentScaleFactor` and outputs at the SCREEN scale
+  (3240px on a 3x device), so export size would depend on the device. `SKRenderer` with
+  an explicit viewport gives exact sizes. Use it.
+- `SKLabelNode` SILENTLY falls back to Times when given the system font's PostScript
+  name (".SFUI-Semibold"). It reports a non-zero width, so it looks like it worked.
+  Glyphs are therefore rendered through UIKit (`GlyphTextureFactory`) and handed to
+  SpriteKit as textures, which also keeps metrics identical to v1/v2 so saved
+  compositions do not reflow.
+- Glyph textures are drawn WHITE and tinted per node, so a colour change does not
+  re-render the texture.
+- SKShader uses a GLSL ES subset, NOT Metal. v2's `.metal` shaders were rewritten in
+  `SpriteShaders.swift`; `u_texel` (1/textureSize) is supplied so offsets stay in pixels.
+- The global shader lives on an `SKEffectNode` wrapping the glyph nodes, with a clear
+  canvas-sized sprite inside it so a glow or tear is not clipped at the block's edge.
 - Export renders via `ImageRenderer` (SwiftUI) at the target aspect ratio and scale.
 - Photos save requires `NSPhotoLibraryAddUsageDescription` in Info.plist.
 - Bundled fonts must be OFL/licence-checked and declared in Info.plist under
