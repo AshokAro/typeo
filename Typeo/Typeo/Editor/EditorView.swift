@@ -20,9 +20,11 @@ struct EditorView: View {
     @State private var didSave = false
     @State private var interaction: GlyphInteraction = .none
     @State private var isRecordingSheetUp = false
-    @State private var activeFill: FillTarget?
     @State private var isLocked = false
-    @State private var railOffset: CGSize = .zero
+    @State private var collisionsOn = false
+    /// Which detent the open sheet is sitting at, so the canvas knows how much room
+    /// it actually has above it.
+    @State private var sheetDetent: PresentationDetent = Self.shortSheet
     @State private var recordedVideo: URL?
     @State private var recordingRemaining: Int?
     @State private var recordingTask: Task<Void, Never>?
@@ -32,7 +34,9 @@ struct EditorView: View {
     @State private var amounts: [GlyphInteraction: Double] = Dictionary(
         uniqueKeysWithValues: GlyphInteraction.allCases.map { ($0, $0.defaultAmount) }
     )
-    @State private var jumbleAmount: Double = 1
+    @State private var jumbleAmount: Double = 0
+    /// Set as soon as a mode moves letters, so Reset is enabled for scene-only state.
+    @State private var didInteract = false
 
     enum SliderTarget: Hashable {
         case interaction(GlyphInteraction)
@@ -41,6 +45,19 @@ struct EditorView: View {
 
     private var currentAmount: Double { amounts[interaction] ?? interaction.defaultAmount }
     private var isSheetOpen: Bool { showStylePanel || showFontPicker }
+
+    /// The style and type sheets stop at 70% of the screen so the canvas is never
+    /// hidden behind what is being changed.
+    static let shortSheet = PresentationDetent.fraction(0.45)
+    static let tallSheet = PresentationDetent.fraction(0.7)
+
+    /// How much of the canvas area is still visible above the open sheet. Measured
+    /// against the chrome rather than derived: the canvas area already excludes the
+    /// top bar, so the fractions are not simply 1 minus the detent.
+    private var canvasHeightFactor: CGFloat {
+        guard isSheetOpen else { return 1 }
+        return sheetDetent == Self.tallSheet ? 0.32 : 0.66
+    }
     @State private var scene = GlyphScene(
         composition: Composition(),
         size: AspectRatio.square.referenceSize
@@ -62,36 +79,20 @@ struct EditorView: View {
                         composition: store.composition,
                         interaction: interaction,
                         interactionAmount: currentAmount,
+                        collisions: collisionsOn,
                         availableSize: CGSize(
                             width: proxy.size.width,
-                            height: proxy.size.height * (isSheetOpen ? 0.52 : 1)
+                            height: proxy.size.height * canvasHeightFactor
                         )
                     )
                     .frame(maxHeight: .infinity, alignment: isSheetOpen ? .top : .center)
-                    .animation(.snappy(duration: 0.25), value: isSheetOpen)
+                    .animation(.snappy(duration: 0.25), value: canvasHeightFactor)
                     if store.composition.isEmpty {
                         emptyHint
                     }
                     if let countdown = recordingRemaining {
                         recordingOverlay(countdown)
                     }
-
-                    HStack(alignment: .top, spacing: 8) {
-                        Spacer(minLength: 0)
-                        if let activeFill {
-                            FillEditor(store: store, target: activeFill)
-                                .transition(.move(edge: .trailing).combined(with: .opacity))
-                        }
-                        ToolRail(
-                            store: store,
-                            activeFill: $activeFill,
-                            isLocked: $isLocked,
-                            offset: $railOffset,
-                            bounds: proxy.size
-                        )
-                    }
-                    .padding(.trailing, 8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -126,8 +127,8 @@ struct EditorView: View {
             .frame(width: 0, height: 0)
         )
         .onAppear {
+            scene.onInteractionBegan = { didInteract = true }
             scene.onCaretTap = { index in
-                withAnimation(.snappy(duration: 0.2)) { activeFill = nil }
                 caretIndex = index
                 isEditing = true
                 scene.setCaret(index: index)
@@ -144,17 +145,11 @@ struct EditorView: View {
         }
         // Half height, scrolling inside, and the canvas behind stays interactive so
         // effects can be tried without dismissing the sheet.
-        .sheet(isPresented: $showFontPicker) {
-            FontPickerSheet(store: store)
-                .presentationDetents([.fraction(0.5)])
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
-                .presentationDragIndicator(.visible)
+        .sheet(isPresented: $showFontPicker, onDismiss: { sheetDetent = Self.shortSheet }) {
+            FontPickerSheet(store: store).modifier(EditorSheetLayout(detent: $sheetDetent))
         }
-        .sheet(isPresented: $showStylePanel) {
-            StylePanel(store: store)
-                .presentationDetents([.fraction(0.5)])
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
-                .presentationDragIndicator(.visible)
+        .sheet(isPresented: $showStylePanel, onDismiss: { sheetDetent = Self.shortSheet }) {
+            StylePanel(store: store).modifier(EditorSheetLayout(detent: $sheetDetent))
         }
         .sheet(isPresented: $isExporting) {
             if let exportImage { ExportSheet(image: exportImage) }
@@ -258,68 +253,108 @@ struct EditorView: View {
 
     /// v3/v6. Everything on this row writes DIFFERENT values to individual glyphs.
     /// Long-press a mode to reveal its slider.
+    /// v3/v6. Everything on this row writes DIFFERENT values to individual glyphs.
+    /// One tap selects a mode AND opens its slider — there is nothing behind a long
+    /// press any more.
     private var modeBar: some View {
+        // One row, one scroll view. Splitting the fixed controls out into a sibling
+        // HStack squeezed the modes into a narrower scroll view than their own
+        // content, and the shuffle pill was clipped away entirely.
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 ForEach(GlyphInteraction.allCases) { mode in
-                    InteractionButton(mode: mode, isSelected: interaction == mode) {
-                        interaction = mode
-                        if mode == .none {
-                            scene.reset()
-                            expandedSlider = nil
-                        } else {
-                            withAnimation(.snappy(duration: 0.2)) {
-                                expandedSlider = .interaction(mode)
-                            }
-                        }
-                    } onLongPress: {
-                        guard mode != .none else { return }
-                        interaction = mode
-                        withAnimation(.snappy(duration: 0.2)) {
-                            expandedSlider = .interaction(mode)
-                        }
+                    InteractionButton(mode: mode, isSelected: isSelected(mode)) {
+                        select(mode)
                     }
                 }
+
+                // Shuffle is a mode like the rest now: it just mutates the model
+                // instead of responding to a touch.
+                ShuffleButton(isSelected: expandedSlider == .jumble) {
+                    selectShuffle()
+                }
+                .disabled(store.composition.isEmpty)
 
                 Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
 
-                Button {
-                    store.beginLiveJumble()
-                    store.updateLiveJumble(amount: jumbleAmount)
-                    store.endLiveJumble()
-                } label: {
-                    Image(systemName: "shuffle").font(.system(size: 14, weight: .semibold))
-                        .frame(width: 30, height: 24)
+                // Was on the floating rail. A toggle belongs with the modes it holds
+                // in place, and the rail was covering the canvas to say so.
+                ToggleButton(
+                    systemImage: isLocked ? "lock.fill" : "lock.open",
+                    isOn: isLocked,
+                    label: isLocked ? "Unlock effect" : "Lock effect in place"
+                ) {
+                    isLocked.toggle()
                 }
-                .buttonStyle(.glass)
-                .disabled(store.composition.isEmpty)
-                .simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.35).onEnded { _ in
-                        store.beginLiveJumble()
-                        store.updateLiveJumble(amount: jumbleAmount)
-                        withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
-                    }
-                )
-                .accessibilityLabel("Shuffle letters. Long press for amount.")
 
-                Button {
-                    store.unjumble()
-                    scene.reset()
-                } label: {
+                ToggleButton(
+                    systemImage: "circlebadge.2.fill",
+                    isOn: collisionsOn,
+                    label: collisionsOn ? "Turn off letter collision" : "Letters collide"
+                ) {
+                    collisionsOn.toggle()
+                    didInteract = true
+                }
+
+                Button { resetLetters() } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 30, height: 24)
+                        .frame(width: 20, height: 24)
                 }
                 .buttonStyle(.glass)
-                .disabled(!store.isJumbled)
+                .disabled(!canReset)
                 .accessibilityLabel("Reset letters")
             }
+            // Small control size: eight pills at the default size ran a long way past
+            // the screen, and Reset was the one pushed off.
+            .controlSize(.small)
             // Vertical room so a pressed pill's glass is not sliced off, and the row
             // runs edge to edge instead of stopping at the page margin.
             .padding(.vertical, 8)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 10)
         }
         .scrollClipDisabled()
+    }
+
+    private func isSelected(_ mode: GlyphInteraction) -> Bool {
+        guard expandedSlider != .jumble else { return false }
+        return interaction == mode
+    }
+
+    private func select(_ mode: GlyphInteraction) {
+        store.endLiveJumble()
+        interaction = mode
+        withAnimation(.snappy(duration: 0.2)) {
+            expandedSlider = mode == .none ? nil : .interaction(mode)
+        }
+    }
+
+    /// Tapping shuffle rolls a fresh scatter. Tapping it again re-rolls, which is why
+    /// it both selects the pill and does the work.
+    private func selectShuffle() {
+        interaction = .none
+        isEditing = false
+        store.beginLiveJumble()
+        store.updateLiveJumble(amount: jumbleAmount)
+        withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
+    }
+
+    /// Reset lights up the moment anything has actually been applied to the letters —
+    /// including a held drop, which never reaches the model and so cannot be seen by
+    /// asking the composition.
+    private var canReset: Bool {
+        store.isJumbled || didInteract || currentAmount != 0
+    }
+
+    private func resetLetters() {
+        store.endLiveJumble()
+        store.unjumble()
+        scene.reset()
+        jumbleAmount = 0
+        for mode in GlyphInteraction.allCases { amounts[mode] = mode.defaultAmount }
+        didInteract = false
+        withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
+        interaction = .none
     }
 
     // Not @ViewBuilder: it computes bindings first and returns a single view.
@@ -350,7 +385,9 @@ struct EditorView: View {
                 }
             )
             range = 0...1
-            detail = "\(letterCount(for: jumbleAmount))/\(glyphCount) letters"
+            // The slider only governs how many letters get a NEW TYPEFACE. Every letter
+            // is scattered regardless, so naming them "letters" read as a lie at zero.
+            detail = "\(letterCount(for: jumbleAmount))/\(glyphCount) restyled"
         }
 
         let isBipolar = range.lowerBound < 0
@@ -360,15 +397,7 @@ struct EditorView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 54, alignment: .leading)
 
-            ZStack {
-                if isBipolar {
-                    // A centre tick, so it is obvious the control rests at zero.
-                    Rectangle()
-                        .fill(Color.white.opacity(0.35))
-                        .frame(width: 1, height: 12)
-                }
-                Slider(value: value, in: range)
-            }
+            SnappingSlider(value: value, range: range)
 
             Button {
                 value.wrappedValue = isBipolar ? 0 : value.wrappedValue
@@ -387,6 +416,7 @@ struct EditorView: View {
             Button {
                 if case .jumble = target { store.endLiveJumble() }
                 withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
+                if case .jumble = target {} else { interaction = .none }
             } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
             }
@@ -449,7 +479,6 @@ struct EditorView: View {
     private func beginVideoRecording() {
         guard !store.composition.isEmpty, recordingRemaining == nil else { return }
         isEditing = false
-        activeFill = nil
         recordedVideo = nil
 
         scene.beginTouchRecording()
@@ -470,6 +499,7 @@ struct EditorView: View {
                     composition: store.composition,
                     interaction: interaction,
                     interactionAmount: currentAmount,
+                    collisions: collisionsOn,
                     touchTrack: track,
                     settings: VideoExportSettings(
                         duration: Double(seconds),
@@ -568,20 +598,57 @@ private struct AspectButton: View {
     }
 }
 
+/// Both editor sheets share one presentation: two detents, the taller capped at 70%,
+/// with the canvas behind still interactive so an effect can be tried without
+/// dismissing the panel.
+private struct EditorSheetLayout: ViewModifier {
+    @Binding var detent: PresentationDetent
+
+    func body(content: Content) -> some View {
+        content
+            .presentationDetents([EditorView.shortSheet, EditorView.tallSheet], selection: $detent)
+            // Opaque, not a material: the lit mode pills behind the sheet smeared
+            // through the blur and read as a stain across the panel.
+            .presentationBackground(Color(uiColor: .systemGroupedBackground))
+            .presentationBackgroundInteraction(.enabled(upThrough: EditorView.tallSheet))
+            .presentationDragIndicator(.visible)
+    }
+}
+
+/// A pill that stays lit while it is on — lock, and in Stage 3 collision.
+struct ToggleButton: View {
+    let systemImage: String
+    let isOn: Bool
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Group {
+            if isOn { button.buttonStyle(.glassProminent) }
+            else { button.buttonStyle(.glass) }
+        }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 20, height: 24)
+        }
+        .accessibilityLabel(label)
+    }
+}
+
 private struct InteractionButton: View {
     let mode: GlyphInteraction
     let isSelected: Bool
     let action: () -> Void
-    var onLongPress: () -> Void = {}
 
     var body: some View {
         Group {
             if isSelected { button.buttonStyle(.glassProminent) }
             else { button.buttonStyle(.glass) }
         }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35).onEnded { _ in onLongPress() }
-        )
     }
 
     private var button: some View {
@@ -589,8 +656,27 @@ private struct InteractionButton: View {
             Label(mode.label, systemImage: mode.systemImage)
                 .font(.system(size: 12, weight: .semibold))
                 .labelStyle(.iconOnly)
-                .frame(width: 30, height: 24)
+                .frame(width: 20, height: 24)
         }
         .accessibilityLabel(mode.label)
+    }
+}
+
+private struct ShuffleButton: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if isSelected { button.buttonStyle(.glassProminent) }
+        else { button.buttonStyle(.glass) }
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            Image(systemName: "shuffle")
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 20, height: 24)
+        }
+        .accessibilityLabel("Shuffle letters")
     }
 }

@@ -49,16 +49,19 @@ struct StylePreset: Identifiable, Hashable {
                 angleDegrees: 120
             ),
             shader: ShaderEffect(kind: .glass, intensity: 0.85),
-            backgroundShader: ShaderEffect(kind: .meshGradient, intensity: 0.55, secondary: 0.3)
+            // No background shader here on purpose: glass refracts the background
+            // FILL, so a shadered background shows through the letters as a different
+            // image from the one around them.
+            backgroundShader: nil
         ),
         StylePreset(
-            name: "Gem Smoke",
+            name: "Aurora",
             font: GlyphFont(fontName: nil, design: .serif),
             color: .white,
-            textGradient: nil,
-            background: .solid(RGBAColor(red: 0.04, green: 0.02, blue: 0.10)),
-            shader: ShaderEffect(kind: .gemSmoke, intensity: 0.9, secondary: 0.45),
-            backgroundShader: ShaderEffect(kind: .grainGradient, intensity: 0.45, secondary: 0.5)
+            textGradient: GradientPaint.ice,
+            background: .solid(RGBAColor(red: 0.03, green: 0.02, blue: 0.09)),
+            shader: ShaderEffect(kind: .bloom, intensity: 0.5),
+            backgroundShader: ShaderEffect(kind: .meshGradient, intensity: 0.7, secondary: 0.35)
         ),
         StylePreset(
             name: "Heatmap",

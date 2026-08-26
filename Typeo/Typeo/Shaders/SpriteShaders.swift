@@ -77,6 +77,83 @@ enum SpriteShaders {
     }
     """
 
+    // MARK: - Blurred field layer
+    //
+    // Some effects need a soft field AROUND the letters — a neon halo, a heat bloom.
+    // A single-pass SKShader cannot blur: sampling a ring of taps reproduces the glyph
+    // at every tap, which is exactly what "pinpoints of light" and "the text repeated
+    // a bunch of times" were. Instead a second layer holds copies of the glyphs, runs
+    // a real CIGaussianBlur (verified to work under SKRenderer, and to scale with the
+    // scene rather than the raster, so an export matches the screen), and this shader
+    // colours the result. SKEffectNode applies `filter` BEFORE `shader`, so the shader
+    // is handed the already-blurred alpha.
+
+    struct Field {
+        var shader: SKShader
+        var blurRadius: Double
+        /// Glow adds to what is behind it; a heat field paints over it.
+        var additive: Bool
+    }
+
+    static func field(for effect: ShaderEffect) -> Field? {
+        switch effect.kind {
+        case .neon:
+            return Field(
+                shader: fieldShader(neonField, effect),
+                blurRadius: 10 + effect.intensity * 46,
+                additive: true
+            )
+        case .thermal:
+            return Field(
+                shader: fieldShader(heatField, effect),
+                blurRadius: 12 + effect.intensity * 44,
+                additive: false
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func fieldShader(_ source: String, _ effect: ShaderEffect) -> SKShader {
+        let shader = SKShader(source: helpers + source)
+        shader.uniforms = [
+            SKUniform(name: "u_amount", float: Float(effect.intensity)),
+            SKUniform(name: "u_secondary", float: Float(effect.resolvedSecondary)),
+        ]
+        return shader
+    }
+
+    static let neonField = """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float glow = clamp(src.a * (1.6 + u_amount * 2.4), 0.0, 1.0);
+        glow = pow(glow, 0.8);
+        vec3 tint = hueRotate(vec3(0.15, 0.90, 1.00), u_secondary * 6.2831);
+        gl_FragColor = vec4(clamp(tint, 0.0, 1.0) * glow * u_amount, glow * u_amount);
+    }
+    """
+
+    static let heatField = """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float heat = clamp(src.a * (1.2 + u_amount * 2.2), 0.0, 1.0);
+
+        vec3 c0 = vec3(0.02, 0.00, 0.18);
+        vec3 c1 = vec3(0.26, 0.00, 0.66);
+        vec3 c2 = vec3(0.95, 0.14, 0.08);
+        vec3 c3 = vec3(1.00, 0.76, 0.05);
+        vec3 c4 = vec3(1.00, 1.00, 0.93);
+
+        vec3 ramp = mix(c0, c1, smoothstep(0.00, 0.25, heat));
+        ramp = mix(ramp, c2, smoothstep(0.25, 0.50, heat));
+        ramp = mix(ramp, c3, smoothstep(0.50, 0.75, heat));
+        ramp = mix(ramp, c4, smoothstep(0.75, 1.00, heat));
+
+        float alpha = smoothstep(0.015, 0.22, heat) * u_amount;
+        gl_FragColor = vec4(ramp * alpha, alpha);
+    }
+    """
+
     /// Shared noise helpers, prepended to every shader.
     static let helpers = """
     float hash21(vec2 p) {
@@ -187,14 +264,16 @@ extension SpriteShaders {
         vec4 src = texture2D(u_texture, v_tex_coord);
         float a = max(src.a, 0.001);
         vec2 uv = v_tex_coord;
-        float t = u_time * 0.22;
+        // Flow drives the clock rather than offsetting a band: at 0 the metal is a
+        // still image instead of a slow crawl.
+        float t = (u_time + u_time_offset) * 0.22 * u_secondary;
 
         vec2 q = vec2(valueNoise(uv * 3.0 + t), valueNoise(uv * 3.0 + 5.2 - t));
         vec2 r = vec2(valueNoise(uv * 3.0 + 4.0 * q + t * 0.7),
                       valueNoise(uv * 3.0 + 4.0 * q + 9.2 - t * 0.6));
         float flow = valueNoise(uv * 4.0 + 4.0 * r);
 
-        float band = fract(flow * 3.0 + u_secondary * 2.0);
+        float band = fract(flow * 3.0);
         float sheen = smoothstep(0.40, 0.50, band) * smoothstep(0.60, 0.50, band);
 
         vec3 metal = mix(vec3(0.14, 0.16, 0.21), vec3(0.88, 0.92, 1.0), flow);
@@ -205,22 +284,72 @@ extension SpriteShaders {
     }
     """
 
+    /// Liquid glass. The letters are not tinted — the BACKGROUND is sampled through
+    /// them, bent by the glyph's own edge normal, with a lit bevel on top.
+    ///
+    /// `.glassEffect` cannot do this: it is a SwiftUI modifier, it cannot attach to a
+    /// SpriteKit node, and SKRenderer would not capture it on export. This is the
+    /// recipe underneath that look — lens, frost, rim light, contact shadow — written
+    /// where the canvas can actually run it.
     static let glass = helpers + """
     void main() {
         vec2 uv = v_tex_coord;
-        vec2 e = u_texel * 3.0;
+        vec4 src = texture2D(u_texture, uv);
+        float a = max(src.a, 0.001);
+
+        // Gradient of the alpha field: zero in the flat middle of a stroke, strong at
+        // the contour, which is where real glass bends and catches light.
+        vec2 e = u_texel * 2.0;
         float ax = texture2D(u_texture, uv + vec2(e.x, 0.0)).a
                  - texture2D(u_texture, uv - vec2(e.x, 0.0)).a;
         float ay = texture2D(u_texture, uv + vec2(0.0, e.y)).a
                  - texture2D(u_texture, uv - vec2(0.0, e.y)).a;
+        vec2 gradient = vec2(ax, ay);
+        float slope = length(gradient);
+        float edge = clamp(slope * 3.0, 0.0, 1.0);
+        // Outward-facing normal of the bevel. Alpha falls off outwards, so the
+        // outward direction is the NEGATIVE gradient.
+        vec2 normal = -gradient / max(slope, 0.0001);
 
-        vec2 bend = vec2(ax, ay) * u_amount * u_texel * 2600.0;
-        vec4 src = texture2D(u_texture, uv - bend);
-        float a = max(src.a, 0.001);
-        vec3 rgb = src.rgb / a;
+        // How deep inside a stroke this pixel is. Without it the interior sampled the
+        // background straight through and the letters all but disappeared.
+        float wide = texture2D(u_texture, uv + vec2(9.0, 0.0) * u_texel).a
+                   + texture2D(u_texture, uv - vec2(9.0, 0.0) * u_texel).a
+                   + texture2D(u_texture, uv + vec2(0.0, 9.0) * u_texel).a
+                   + texture2D(u_texture, uv - vec2(0.0, 9.0) * u_texel).a;
+        float interior = smoothstep(1.6, 3.9, wide);
 
-        float spec = pow(max(0.0, -(ax * 0.6 + ay * 0.8)), 1.5) * u_amount * 2.4;
-        vec3 outc = clamp(rgb * (0.82 + 0.18 * u_amount) + spec, 0.0, 1.0);
+        vec2 bend = gradient * (120.0 + 420.0 * u_amount) * u_texel;
+        vec2 lens = clamp(uv - bend, 0.0, 1.0);
+
+        // Frost: a few taps of the background, which is what gives glass its milkiness
+        // instead of a plain see-through hole.
+        vec3 frost = texture2D(u_background, lens).rgb
+                   + texture2D(u_background, clamp(lens + vec2(14.0, 0.0) * u_texel, 0.0, 1.0)).rgb
+                   + texture2D(u_background, clamp(lens - vec2(14.0, 0.0) * u_texel, 0.0, 1.0)).rgb
+                   + texture2D(u_background, clamp(lens + vec2(0.0, 14.0) * u_texel, 0.0, 1.0)).rgb
+                   + texture2D(u_background, clamp(lens - vec2(0.0, 14.0) * u_texel, 0.0, 1.0)).rgb;
+        frost *= 0.2;
+
+        // A touch of chromatic separation, strongest where the lens bends hardest.
+        float red = texture2D(u_background, clamp(uv - bend * 1.22, 0.0, 1.0)).r;
+        vec3 behind = texture2D(u_background, lens).rgb;
+        vec3 refracted = mix(vec3(red, behind.g, behind.b), frost, 0.5);
+
+        // Body: brighter and slightly whitened where the glass is thick.
+        vec3 body = mix(refracted, vec3(1.0), 0.12 * u_amount + 0.14 * interior * u_amount);
+        body *= 1.0 + 0.22 * interior * u_amount;
+
+        // Bevel lighting from the top left, with a contact shadow opposite it. This is
+        // what makes the shape read as a solid object rather than a tinted hole.
+        vec2 key = vec2(-0.55, 0.835);
+        float lit = max(0.0, dot(normal, key));
+        float shade = max(0.0, dot(normal, -key));
+        body += vec3(1.0) * pow(lit, 2.0) * edge * (0.45 + 0.75 * u_amount);
+        body -= vec3(0.30, 0.30, 0.34) * pow(shade, 2.0) * edge * u_amount;
+
+        vec3 own = src.rgb / a;
+        vec3 outc = mix(own, clamp(body, 0.0, 1.0), u_amount);
         gl_FragColor = vec4(outc * src.a, src.a);
     }
     """
@@ -286,70 +415,32 @@ extension SpriteShaders {
     }
     """
 
-    /// Heatmap. The heat field is a BLURRED ALPHA, not luminance: uniformly white
-    /// text has no luminance gradient to map, which is why the old version appeared to
-    /// do nothing at all.
+    /// Heatmap, TEXT layer. The heat FIELD is a real Gaussian blur on its own node
+    /// below this one — see `field(for:)`. Sampling a ring of taps here is what made
+    /// the old version look like the word printed twenty times.
     static let thermal = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
-
-        float heat = 0.0;
-        float radius = 12.0 + u_amount * 52.0;
-        for (int i = 0; i < 20; i++) {
-            float t = (float(i) + 0.5) / 20.0;
-            float rr = radius * sqrt(t);
-            float ang = float(i) * 2.39996323;
-            heat += texture2D(u_texture, v_tex_coord + vec2(cos(ang), sin(ang)) * rr * u_texel).a;
-        }
-        heat = clamp((heat / 20.0) * 1.45, 0.0, 1.0);
-
-        vec3 c0 = vec3(0.00, 0.00, 0.16);
-        vec3 c1 = vec3(0.26, 0.00, 0.66);
-        vec3 c2 = vec3(0.95, 0.14, 0.08);
-        vec3 c3 = vec3(1.00, 0.76, 0.05);
-        vec3 c4 = vec3(1.00, 1.00, 0.93);
-
-        vec3 ramp = mix(c0, c1, smoothstep(0.00, 0.25, heat));
-        ramp = mix(ramp, c2, smoothstep(0.25, 0.50, heat));
-        ramp = mix(ramp, c3, smoothstep(0.50, 0.75, heat));
-        ramp = mix(ramp, c4, smoothstep(0.75, 1.00, heat));
-
-        float alpha = clamp(max(src.a, heat * 0.92), 0.0, 1.0);
-        vec3 plain = src.rgb;
-        gl_FragColor = vec4(mix(plain, ramp * alpha, u_amount), alpha);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+        // The letters ARE the hot core, so they stay crisp and near-white on top of
+        // the field rather than being blurred into it.
+        vec3 hot = vec3(1.0, 0.97, 0.86);
+        vec3 outc = mix(rgb, hot, u_amount);
+        gl_FragColor = vec4(clamp(outc, 0.0, 1.0) * src.a, src.a);
     }
     """
 
-    /// A real neon glow: a coloured falloff built from the alpha field plus the
-    /// original core kept bright on top. The old preset used bloom, whose spiral taps
-    /// read as pinpoints rather than a continuous halo.
+    /// Neon, TEXT layer: the lit tube itself. The halo is a blurred copy underneath
+    /// (see `field(for:)`) — building it from taps here is what read as pinpoints.
     static let neon = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
-
-        float glow = 0.0;
-        float weight = 0.0;
-        float radius = 10.0 + u_amount * 70.0;
-        for (int i = 0; i < 44; i++) {
-            float t = (float(i) + 0.5) / 44.0;
-            float rr = radius * sqrt(t);
-            // Golden angle plus a per-tap jitter: with a plain spiral the taps line up
-            // into visible rings and the halo reads as pinpoints.
-            float ang = float(i) * 2.39996323 + hash21(vec2(float(i), 0.7)) * 1.4;
-            float falloff = 1.0 - t * 0.85;
-            glow += texture2D(u_texture, v_tex_coord + vec2(cos(ang), sin(ang)) * rr * u_texel).a * falloff;
-            weight += falloff;
-        }
-        glow = clamp(glow / max(weight, 0.001) * 2.4, 0.0, 1.0);
-
-        vec3 cool = vec3(0.25, 0.95, 1.00);
-        vec3 warm = vec3(1.00, 0.25, 0.75);
-        vec3 tint = mix(cool, warm, u_secondary);
-
-        vec3 halo = tint * glow * u_amount * 1.5;
-        vec3 core = src.rgb + vec3(1.0) * src.a * 0.35 * u_amount;
-        float alpha = clamp(max(src.a, glow * u_amount), 0.0, 1.0);
-        gl_FragColor = vec4(clamp(core + halo, 0.0, 1.0), alpha);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+        vec3 tint = hueRotate(vec3(0.15, 0.90, 1.00), u_secondary * 6.2831);
+        vec3 core = mix(rgb, vec3(1.0), 0.7 * u_amount) + clamp(tint, 0.0, 1.0) * 0.3 * u_amount;
+        gl_FragColor = vec4(clamp(core, 0.0, 1.0) * src.a, src.a);
     }
     """
 
@@ -476,12 +567,16 @@ extension SpriteShaders {
         m += step(abs(index - 12.0), 0.4) * 1.0000;  m += step(abs(index - 13.0), 0.4) * 0.5000;
         m += step(abs(index - 14.0), 0.4) * 0.8750;  m += step(abs(index - 15.0), 0.4) * 0.3750;
 
-        float levels = mix(2.0, 6.0, u_secondary);
-        vec3 dithered = floor(rgb * levels + (m - 0.5)) / (levels - 1.0);
-        dithered = clamp(dithered, 0.0, 1.0);
+        // Shade the ink before quantising. Flat white is a fixed point of any
+        // quantiser — the old version ran correctly and changed nothing at all.
+        float lum = dot(rgb, vec3(0.299, 0.587, 0.114));
+        float ramp = mix(1.0, 0.10 + 0.90 * v_tex_coord.y, u_amount);
+        float shade = clamp(lum * ramp, 0.0, 1.0);
 
-        vec3 outc = mix(rgb, dithered, u_amount);
-        gl_FragColor = vec4(outc * src.a, src.a);
+        float levels = mix(2.0, 6.0, u_secondary);
+        float quantised = clamp(floor(shade * levels + (m - 0.5)) / max(1.0, levels - 1.0), 0.0, 1.0);
+
+        gl_FragColor = vec4(rgb * quantised * src.a, src.a);
     }
     """
 }

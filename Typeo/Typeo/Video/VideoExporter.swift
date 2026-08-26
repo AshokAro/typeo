@@ -45,6 +45,7 @@ enum VideoExporter {
         composition: Composition,
         interaction: GlyphInteraction,
         interactionAmount: Double = 0,
+        collisions: Bool = false,
         touchTrack: [GlyphScene.TouchSample] = [],
         settings: VideoExportSettings = VideoExportSettings(),
         progress: @MainActor (Double) -> Void = { _ in }
@@ -54,6 +55,7 @@ enum VideoExporter {
             composition: composition,
             interaction: interaction,
             interactionAmount: interactionAmount,
+            collisions: collisions,
             touchTrack: touchTrack,
             scale: settings.scale
         ) else {

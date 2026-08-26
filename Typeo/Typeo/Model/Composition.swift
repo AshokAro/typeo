@@ -180,6 +180,12 @@ struct ShaderEffect: Codable, Hashable {
 
         var id: String { rawValue }
 
+        /// What the picker offers. Raw values are NEVER removed — Kind is a
+        /// non-optional String enum, so deleting a case fails to decode every saved
+        /// composition that used it — so a retired effect is hidden here and keeps
+        /// rendering for anything already saved.
+        static let selectable: [Kind] = allCases.filter { $0 != .gemSmoke }
+
         var label: String {
             switch self {
             case .none:       "None"

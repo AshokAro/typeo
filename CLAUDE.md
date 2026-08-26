@@ -133,8 +133,9 @@ only what happens in between.
   divergence still works.
 - `CGContext.drawLinearGradient` must be given `.drawsBeforeStartLocation` and
   `.drawsAfterEndLocation`, or an oblique angle leaves the canvas corners unpainted.
-- Colour editing lives in a right-edge rail (`FillRail`), not a sheet — a sheet covered
-  the canvas so you could not see what you were changing.
+- Colour editing lived in a right-edge rail (`FillRail`) because a sheet covered the
+  canvas. SUPERSEDED in Stage D: fill and effect are back in the style sheet, and the
+  canvas shrinks into the space above the open sheet instead. See the Stage D notes.
 - Don't wrap a fixed-size glass control in `GlassEffectContainer`; it is for morphing
   between glass shapes and sized the rail's capsule to the wrong bounds.
 
@@ -206,6 +207,10 @@ only what happens in between.
 - EVERY interaction slider is bipolar, -1...1, and rests at 0 doing nothing:
   warp = pucker/bloat, attract = push/pull, gravity = float up/fall down.
   Shuffle stays 0...1 because a negative percentage is meaningless.
+- Shuffle has TWO axes. Tapping it SCATTERS every letter (position + rotation) and the
+  slider says how many additionally get a new TYPEFACE and size — so a shuffle at 0
+  still throws the block around without touching the type. The readout says "restyled"
+  for that reason.
 - The slider UI must read `mode.amountRange`. Hardcoding `0...1` in `sliderRow` is what
   made pucker and float-up unreachable even though the model already allowed them —
   the range existed and nothing used it.
@@ -257,3 +262,70 @@ Prefer XcodeBuildMCP tools when available. CLI fallback:
 xcodebuild -project Typeo/Typeo.xcodeproj \
   -scheme Typeo -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
+
+## v6 Stage D notes (current)
+
+### Panels
+- Fill and effect both live in the style sheet under ONE top-level Text / Background
+  tab. The old objection — a sheet hides the artwork — is answered by shrinking the
+  canvas into the room above it: the sheet has two detents (0.45 / 0.7, capped at 70%)
+  and the editor TRACKS which one is showing, because `PresentationDetent` cannot be
+  asked for its fraction. The canvas factors are measured against the chrome, not
+  derived from the detent: the canvas area already excludes the top bar.
+- A sheet over this app must set `.presentationBackground` to something OPAQUE. The lit
+  mode pills behind it smeared through the default material and read as a stain.
+- The type sheet holds size and block layout as well as the typeface, so selecting a
+  face no longer dismisses it.
+- The floating tool rail is gone. Lock and collision are toggles in the effect bar.
+
+### Layout traps
+- A `ScrollView` in an `HStack` beside a fixed group gets squeezed NARROWER than its own
+  content, and with `.scrollClipDisabled()` the overflow draws straight over the
+  neighbour — the shuffle pill rendered on top of the lock. One row, one scroll view.
+- Eight pills only fit at `.controlSize(.small)` with 20pt icon frames. `.buttonStyle(.glass)`
+  carries ~14pt of padding a side, which dominates the icon size.
+- `Slider` has no detent. Bipolar sliders snap to 0 inside ±0.05 in the BINDING, with a
+  haptic on the way in.
+
+### Scene
+- `applyAppearance` must push `positionOffset` and `rotation` onto the nodes, or a
+  shuffle that only scatters cannot reach the screen at all. But push only what
+  CHANGED (`appliedTransforms`): re-applying every time would snap a held drop back to
+  the grid the moment an unrelated colour changed.
+- `GlyphScene` is not observable, so it cannot be ASKED whether an effect is showing.
+  It reports via `onInteractionBegan`, which is what enables Reset for scene-only state
+  like a locked drop.
+- Collision is hand-integrated (circle proxies, overlap split, velocity bled off), for
+  the same reason as everything else here: `SKPhysicsBody` barely steps under
+  `SKRenderer`. Pairs are walked over a STABLE ID ORDER — resolving in dictionary hash
+  order would make a recording diverge from the same touches on screen.
+- The collision radius is half the NARROW side of a glyph. A glyph texture is its
+  advance box, so half the wider side would have neighbours shoving each other apart at
+  rest; measured drift on normal text is 0.
+
+### Shader findings
+- `SKEffectNode.filter` WORKS under `SKRenderer` (verified), the CIFilter radius scales
+  with the SCENE and not the raster (so a 2x export matches the screen), and `filter`
+  runs BEFORE `shader` — the shader is handed the already-filtered texture.
+- That is how neon and heatmap get a real halo: a second layer of glyph COPIES under
+  the crisp text, carrying a `CIGaussianBlur`, coloured by a field shader. A ring of
+  taps in one pass reproduces the glyph at every tap, which is exactly what "pinpoints
+  of light" and "the text repeated a bunch of times" were.
+- Flat white text is a FIXED POINT of a quantiser: dithering compiled, ran, and changed
+  nothing. It now shades before quantising. Same family as the luminance LUT that made
+  the old heatmap inert — if an effect reads the ink and the ink is uniform, it has
+  nothing to read.
+- Neon's hue ROTATES around the circle. Crossfading cyan to magenta lands on grey in the
+  middle, the same trap the mesh gradient hit.
+- Liquid metal's Flow multiplies the clock, so 0 is a still image. `SKRenderer.update(atTime:)`
+  does NOT advance the shader clock offscreen either — the freeze was verified by
+  driving `u_time_offset` directly, not by rendering two scene times.
+- Glass refracts the background FILL, handed in as `u_background`. It CANNOT see the
+  background SHADER's output — that lives on another effect node and is not available
+  as a texture — so a shadered background shows through the letters as a different
+  image from the one around them. Do not pair the two; the Glass preset does not.
+- `.glassEffect` can never do this: it is a SwiftUI modifier, it cannot attach to a
+  SpriteKit node, and `SKRenderer` would not capture it. The shader implements the
+  recipe instead — lens, frost, rim light, contact shadow.
+- Retiring an effect means hiding it from `Kind.selectable`, never deleting the case.
+  Gem Smoke is retired and still renders for anything already saved.

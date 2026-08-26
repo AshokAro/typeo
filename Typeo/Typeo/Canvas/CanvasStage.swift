@@ -15,6 +15,7 @@ struct CanvasStage: View {
     let composition: Composition
     let interaction: GlyphInteraction
     let interactionAmount: Double
+    var collisions: Bool = false
     let availableSize: CGSize
 
     private var reference: CGSize { composition.aspectRatio.referenceSize }
@@ -42,6 +43,7 @@ struct CanvasStage: View {
         .onAppear {
             scene.interaction = interaction
             scene.interactionAmount = interactionAmount
+            scene.collisionsEnabled = collisions
             scene.update(composition: composition)
         }
         .onChange(of: composition) { _, new in
@@ -52,6 +54,9 @@ struct CanvasStage: View {
         }
         .onChange(of: interactionAmount) { _, new in
             scene.interactionAmount = new
+        }
+        .onChange(of: collisions) { _, new in
+            scene.collisionsEnabled = new
         }
     }
 }

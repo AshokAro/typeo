@@ -247,48 +247,83 @@ final class CompositionStore {
     // MARK: Live shuffle
     //
     // Dragging the amount re-applies immediately. The randomised VALUES are generated
-    // once when the drag starts and the order is fixed, so moving the slider only
+    // once when the shuffle starts and the order is fixed, so moving the slider only
     // changes HOW MANY letters are affected — it does not reroll them on every tick,
     // which looked like chaos rather than a control.
+    //
+    // Two axes, deliberately separate:
+    //   · scatter — position and rotation, applied to EVERY letter. A shuffle with the
+    //     slider at zero still throws the block around without touching the typeface.
+    //   · restyle — typeface and size, applied to the fraction the slider names.
+
+    private struct LiveScatter {
+        var offset: CGPoint
+        var rotation: Double
+    }
+
+    private struct LiveRestyle {
+        var font: GlyphFont
+        var size: CGFloat
+    }
 
     private var liveBaseline: [Glyph]?
     private var liveOrder: [Int] = []
-    private var liveValues: [Int: (font: GlyphFont, size: CGFloat, rotation: Double)] = [:]
+    private var liveScatter: [Int: LiveScatter] = [:]
+    private var liveRestyle: [Int: LiveRestyle] = [:]
 
+    var isLiveJumbling: Bool { liveBaseline != nil }
+
+    /// Rolls a fresh set of random values and applies the scatter straight away.
+    /// Calling it again re-rolls, which is what tapping the shuffle pill does.
     func beginLiveJumble() {
         checkpoint("jumble")
         liveBaseline = composition.glyphs
-        liveOrder = composition.glyphs.indices
-            .filter { composition.glyphs[$0].role == .glyph }
-            .shuffled()
-        liveValues = [:]
-        for index in liveOrder {
-            liveValues[index] = (
+        let eligible = composition.glyphs.indices.filter { composition.glyphs[$0].role == .glyph }
+        liveOrder = eligible.shuffled()
+        liveScatter = [:]
+        liveRestyle = [:]
+        for index in eligible {
+            let reach = composition.glyphs[index].size
+            liveScatter[index] = LiveScatter(
+                offset: CGPoint(
+                    x: CGFloat.random(in: -reach * 0.45...reach * 0.45),
+                    y: CGFloat.random(in: -reach * 0.35...reach * 0.35)
+                ),
+                rotation: Double.random(in: -24...24)
+            )
+            liveRestyle[index] = LiveRestyle(
                 font: FontCatalog.all.randomElement()?.glyphFont ?? style.font,
-                size: (style.size * CGFloat.random(in: 0.6...1.5)).rounded(),
-                rotation: Double.random(in: -20...20)
+                size: (style.size * CGFloat.random(in: 0.6...1.5)).rounded()
             )
         }
     }
 
+    /// Re-applies from the baseline on every tick of the slider.
     func updateLiveJumble(amount: Double) {
+        if liveBaseline == nil { beginLiveJumble() }
         guard let baseline = liveBaseline else { return }
         composition.glyphs = baseline
+
+        // Scatter every letter, whatever the amount says.
+        for (index, scatter) in liveScatter where composition.glyphs.indices.contains(index) {
+            composition.glyphs[index].positionOffset = scatter.offset
+            composition.glyphs[index].rotation = scatter.rotation
+        }
 
         let fraction = min(max(amount, 0), 1)
         let count = fraction <= 0 ? 0 : max(1, Int((Double(liveOrder.count) * fraction).rounded()))
         for index in liveOrder.prefix(count) {
-            guard let value = liveValues[index], composition.glyphs.indices.contains(index) else { continue }
-            composition.glyphs[index].font = value.font
-            composition.glyphs[index].size = value.size
-            composition.glyphs[index].rotation = value.rotation
+            guard let restyle = liveRestyle[index], composition.glyphs.indices.contains(index) else { continue }
+            composition.glyphs[index].font = restyle.font
+            composition.glyphs[index].size = restyle.size
         }
     }
 
     func endLiveJumble() {
         liveBaseline = nil
         liveOrder = []
-        liveValues = [:]
+        liveScatter = [:]
+        liveRestyle = [:]
     }
 
     func jumble(_ options: JumbleOptions = JumbleOptions()) {

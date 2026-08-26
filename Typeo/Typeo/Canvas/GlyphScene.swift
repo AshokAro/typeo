@@ -13,6 +13,7 @@
 import SpriteKit
 import SwiftUI
 import UIKit
+import CoreImage
 import simd
 
 enum GlyphInteraction: String, CaseIterable, Identifiable {
@@ -97,13 +98,30 @@ final class GlyphScene: SKScene {
     /// When locked, releasing a touch does NOT spring the letters back, so a state can
     /// be held still for a screenshot or an export.
     var isLocked = false
+    /// Letters behave as solid bodies: they push each other out of the way instead of
+    /// passing through. Hand-integrated, like every other motion here.
+    var collisionsEnabled = false
 
     /// Called when the canvas is tapped with no interaction mode active, so the editor
     /// can move the insertion point. Carries the caret index the tap landed on.
     var onCaretTap: ((Int) -> Void)?
 
+    /// Fired the moment an active mode starts moving letters, so the editor can light
+    /// up Reset. The scene is not observable, so it has to say so rather than be asked.
+    var onInteractionBegan: (() -> Void)?
+
     private var glyphNodes: [UUID: SKSpriteNode] = [:]
+    /// Laid-out order. Collision pairs are walked over THIS, not over the node
+    /// dictionary: resolving in hash order would make an offscreen recording diverge
+    /// from the same touches on the live canvas.
+    private var orderedIds: [UUID] = []
     private var restPositions: [UUID: CGPoint] = [:]
+    /// The per-glyph transform last pushed from the model. Only a CHANGE is written to
+    /// the nodes: re-applying on every appearance update would snap a held drop back
+    /// to the grid the moment an unrelated colour changed.
+    private var appliedTransforms: [UUID: (offset: CGPoint, rotation: Double)] = [:]
+    private var fieldEffect = SKEffectNode()  // blurred copies of the glyphs, below
+    private var fieldNodes: [UUID: SKSpriteNode] = [:]
     private var effectNode = SKEffectNode()   // outer: the FX shader
     private var fillNode = SKEffectNode()     // inner: the text gradient fill
     private var backgroundNode = SKSpriteNode()
@@ -148,7 +166,10 @@ final class GlyphScene: SKScene {
     func rebuild() {
         removeAllChildren()
         glyphNodes.removeAll()
+        fieldNodes.removeAll()
+        orderedIds.removeAll()
         restPositions.removeAll()
+        appliedTransforms.removeAll()
 
         size = composition.aspectRatio.referenceSize
 
@@ -160,6 +181,19 @@ final class GlyphScene: SKScene {
         backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
         backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
         backgroundEffect.addChild(backgroundNode)
+
+        // Glow and heat need a soft field around the letters. One shader pass cannot
+        // blur, so the field is a second layer of glyph COPIES under the crisp text,
+        // carrying a real CIGaussianBlur.
+        fieldEffect = SKEffectNode()
+        fieldEffect.zPosition = -5
+        fieldEffect.shouldRasterize = false
+        addChild(fieldEffect)
+
+        let fieldBleed = SKSpriteNode(color: .clear, size: size)
+        fieldBleed.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        fieldBleed.alpha = 0.001
+        fieldEffect.addChild(fieldBleed)
 
         effectNode = SKEffectNode()
         effectNode.shouldEnableEffects = composition.globalShader.kind != .none
@@ -215,12 +249,25 @@ final class GlyphScene: SKScene {
                 y: rest.y - glyph.positionOffset.y
             )
             node.zRotation = -glyph.rotation * .pi / 180
+            appliedTransforms[glyph.id] = (offset: glyph.positionOffset, rotation: glyph.rotation)
 
             glyphNodes[glyph.id] = node
+            orderedIds.append(glyph.id)
             fillNode.addChild(node)
+
+            // The field copy is always white: the field shader colours it, so a text
+            // colour change never has to touch this layer.
+            let mirror = SKSpriteNode(texture: texture)
+            mirror.size = node.size
+            mirror.anchorPoint = node.anchorPoint
+            mirror.position = node.position
+            mirror.zRotation = node.zRotation
+            fieldNodes[glyph.id] = mirror
+            fieldEffect.addChild(mirror)
         }
 
         applyShader()
+        syncFieldNodes()
         rebuildCaret()
     }
 
@@ -238,8 +285,28 @@ final class GlyphScene: SKScene {
             node.color = UIColor(glyph.color.color)
             node.colorBlendFactor = 1
         }
+        applyModelTransforms()
         effectNode.shouldEnableEffects = composition.globalShader.kind != .none
         applyShader()
+        syncFieldNodes()
+    }
+
+    /// Pushes positionOffset and rotation onto the nodes. Without this a shuffle that
+    /// only scatters — no font or size change — could not reach the screen at all,
+    /// because nothing else in the update path touches a node's transform.
+    private func applyModelTransforms() {
+        for glyph in composition.glyphs {
+            guard let node = glyphNodes[glyph.id], let rest = restPositions[glyph.id] else { continue }
+            let wanted = (offset: glyph.positionOffset, rotation: glyph.rotation)
+            if let applied = appliedTransforms[glyph.id],
+               applied.offset == wanted.offset,
+               applied.rotation == wanted.rotation { continue }
+
+            node.removeAllActions()
+            node.position = CGPoint(x: rest.x + wanted.offset.x, y: rest.y - wanted.offset.y)
+            node.zRotation = -wanted.rotation * .pi / 180
+            appliedTransforms[glyph.id] = wanted
+        }
     }
 
     private func applyFill() {
@@ -269,6 +336,7 @@ final class GlyphScene: SKScene {
     private func applyShader() {
         applyFill()
         applyBackgroundShader()
+        applyField()
         guard let shader = SpriteShaders.shader(for: composition.globalShader) else {
             effectNode.shader = nil
             effectNode.shouldEnableEffects = false
@@ -277,8 +345,46 @@ final class GlyphScene: SKScene {
         shader.uniformNamed("u_texel")?.vectorFloat2Value = vector_float2(
             Float(1.0 / size.width), Float(1.0 / size.height)
         )
+        // Glass samples what is BEHIND the letters, which the text layer cannot see —
+        // the background is a different node. Hand it in as a texture.
+        if composition.globalShader.kind == .glass {
+            shader.addUniform(SKUniform(
+                name: "u_background",
+                texture: BackgroundTextureFactory.texture(for: composition.background, size: size)
+            ))
+        }
         effectNode.shader = shader
         effectNode.shouldEnableEffects = true
+    }
+
+    private func applyField() {
+        guard let field = SpriteShaders.field(for: composition.globalShader) else {
+            fieldEffect.isHidden = true
+            fieldEffect.shouldEnableEffects = false
+            fieldEffect.filter = nil
+            fieldEffect.shader = nil
+            return
+        }
+        let blur = CIFilter(name: "CIGaussianBlur")
+        blur?.setValue(field.blurRadius, forKey: "inputRadius")
+        fieldEffect.filter = blur
+        fieldEffect.shader = field.shader
+        fieldEffect.blendMode = field.additive ? .add : .alpha
+        fieldEffect.shouldEnableEffects = true
+        fieldEffect.isHidden = false
+    }
+
+    /// The field copies follow the live glyph nodes, so a halo moves with the letter
+    /// it belongs to.
+    private func syncFieldNodes() {
+        guard !fieldEffect.isHidden else { return }
+        for (id, mirror) in fieldNodes {
+            guard let node = glyphNodes[id] else { continue }
+            mirror.position = node.position
+            mirror.zRotation = node.zRotation
+            mirror.xScale = node.xScale
+            mirror.yScale = node.yScale
+        }
     }
 
     // MARK: - Motion
@@ -415,6 +521,99 @@ final class GlyphScene: SKScene {
                 motion[id] = state
             }
         }
+
+        resolveCollisions()
+        syncFieldNodes()
+    }
+
+    // MARK: - Collision
+    //
+    // Circle proxies, resolved by splitting each overlap between the pair and bleeding
+    // off the velocity that drove them together. A few relaxation passes settle a
+    // stack; solving each pair once leaves letters jittering against each other.
+    //
+    // No SKPhysicsBody: SKRenderer barely steps the scene, so anything simulated by
+    // SpriteKit itself would stand still in an export while moving on screen.
+
+    private func collisionCentre(_ node: SKSpriteNode) -> CGPoint {
+        CGPoint(x: node.position.x + node.size.width * node.xScale / 2, y: node.position.y)
+    }
+
+    private func collisionRadius(_ node: SKSpriteNode) -> CGFloat {
+        // The narrow dimension: a letter's texture is its advance box, so half the
+        // WIDER side would have neighbours shoving each other apart at rest.
+        min(node.size.width * node.xScale, node.size.height * node.yScale) * 0.5
+    }
+
+    private func resolveCollisions() {
+        guard collisionsEnabled, orderedIds.count > 1 else { return }
+
+        for _ in 0..<3 {
+            for i in 0..<(orderedIds.count - 1) {
+                guard let a = glyphNodes[orderedIds[i]] else { continue }
+                for j in (i + 1)..<orderedIds.count {
+                    guard let b = glyphNodes[orderedIds[j]] else { continue }
+
+                    let ca = collisionCentre(a)
+                    let cb = collisionCentre(b)
+                    let reach = collisionRadius(a) + collisionRadius(b)
+
+                    var dx = cb.x - ca.x
+                    var dy = cb.y - ca.y
+                    var distance = hypot(dx, dy)
+                    guard distance < reach else { continue }
+
+                    // Exactly coincident centres have no normal to push along. Pick a
+                    // fixed one rather than a random one, so the result is repeatable.
+                    if distance < 0.001 {
+                        dx = 1
+                        dy = 0
+                        distance = 0.001
+                    }
+                    let nx = dx / distance
+                    let ny = dy / distance
+                    let push = (reach - distance) * 0.5
+
+                    a.position.x -= nx * push
+                    a.position.y -= ny * push
+                    b.position.x += nx * push
+                    b.position.y += ny * push
+
+                    damp(orderedIds[i])
+                    damp(orderedIds[j])
+                }
+            }
+        }
+
+        // Solid bodies stay on the table. Without this, collision could shove a letter
+        // through the floor the gravity pass had just settled it on.
+        for id in orderedIds {
+            guard let node = glyphNodes[id] else { continue }
+            let radius = collisionRadius(node)
+            let centre = collisionCentre(node)
+            let clampedX = min(max(centre.x, radius), size.width - radius)
+            let clampedY = min(max(centre.y, radius), size.height - radius)
+            if clampedX != centre.x {
+                node.position.x += clampedX - centre.x
+                motion[id]?.driftX = 0
+            }
+            if clampedY != centre.y {
+                node.position.y += clampedY - centre.y
+                motion[id]?.velocity = 0
+                motion[id]?.driftY = 0
+            }
+        }
+    }
+
+    /// Bleeds off the motion that drove a contact, so a pile settles rather than
+    /// buzzing.
+    private func damp(_ id: UUID) {
+        guard var state = motion[id] else { return }
+        state.velocity *= 0.45
+        state.driftX *= 0.6
+        state.driftY *= 0.6
+        state.spin *= 0.6
+        motion[id] = state
     }
 
     private func seedValue(for id: UUID) -> CGFloat {
@@ -456,6 +655,28 @@ final class GlyphScene: SKScene {
         return glyphNodes.values.reduce(0) {
             $0 + hypot($1.position.x - point.x, $1.position.y - point.y)
         } / CGFloat(glyphNodes.count)
+    }
+
+    /// Pairs whose collision proxies currently overlap. 0 means nothing is stacked.
+    var debugOverlappingPairs: Int {
+        var count = 0
+        for i in 0..<max(0, orderedIds.count - 1) {
+            guard let a = glyphNodes[orderedIds[i]] else { continue }
+            for j in (i + 1)..<orderedIds.count {
+                guard let b = glyphNodes[orderedIds[j]] else { continue }
+                let ca = collisionCentre(a)
+                let cb = collisionCentre(b)
+                if hypot(cb.x - ca.x, cb.y - ca.y) < collisionRadius(a) + collisionRadius(b) - 0.5 {
+                    count += 1
+                }
+            }
+        }
+        return count
+    }
+
+    /// Node positions in laid-out order, for comparing two runs of the same input.
+    var debugOrderedPositions: [CGPoint] {
+        orderedIds.compactMap { glyphNodes[$0]?.position }
     }
 
     var debugHasSpringBackActions: Bool {
@@ -615,6 +836,7 @@ final class GlyphScene: SKScene {
         resetMotion()
         capturePreInteractionState()
         recordTouch()
+        if interaction != .none { onInteractionBegan?() }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -721,6 +943,25 @@ enum BackgroundTextureFactory {
         case let .solid(rgba):
             return SKSpriteNode(color: UIColor(rgba.color), size: size)
 
+        case .linearGradient:
+            return SKSpriteNode(texture: texture(for: background, size: size), size: size)
+        }
+    }
+
+    /// The same pixels as `node`, as a texture — the glass shader has to SAMPLE the
+    /// background, and a solid colour node has no texture to sample.
+    static func texture(for background: Background, size: CGSize) -> SKTexture {
+        switch background {
+        case let .solid(rgba):
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let small = CGSize(width: 8, height: 8)
+            let image = UIGraphicsImageRenderer(size: small, format: format).image { context in
+                UIColor(rgba.color).setFill()
+                context.fill(CGRect(origin: .zero, size: small))
+            }
+            return SKTexture(image: image)
+
         case let .linearGradient(colors, angleDegrees):
             let format = UIGraphicsImageRendererFormat.default()
             format.scale = 1
@@ -745,7 +986,7 @@ enum BackgroundTextureFactory {
                     options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
                 )
             }
-            return SKSpriteNode(texture: SKTexture(image: image), size: size)
+            return SKTexture(image: image)
         }
     }
 }

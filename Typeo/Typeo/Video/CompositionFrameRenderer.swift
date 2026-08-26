@@ -36,6 +36,7 @@ final class CompositionFrameRenderer {
         composition: Composition,
         interaction: GlyphInteraction,
         interactionAmount: Double = 0,
+        collisions: Bool = false,
         touchTrack: [GlyphScene.TouchSample] = [],
         scale: CGFloat
     ) {
@@ -73,6 +74,7 @@ final class CompositionFrameRenderer {
         let scene = GlyphScene(composition: composition, size: reference)
         scene.interaction = interaction
         scene.interactionAmount = interactionAmount
+        scene.collisionsEnabled = collisions
         scene.rebuild()
         // With a recorded track the touches drive it; without one, start the mode
         // automatically so an unattended recording still shows something.
