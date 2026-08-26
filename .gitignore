@@ -1,0 +1,32 @@
+# ---- macOS ----
+.DS_Store
+
+# ---- Xcode: per-user state (window layout, breakpoints, last-open file) ----
+# Never commit this. It changes on every launch and conflicts constantly.
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# ---- Build output ----
+# Regenerated on every build. Large, machine-specific, worthless in git.
+build/
+DerivedData/
+*.o
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# ---- Swift Package Manager ----
+.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# ---- Playgrounds ----
+timeline.xctimeline
+playground.xcworkspace
+
+# ---- Secrets / signing (nothing here yet, but don't let it start) ----
+*.mobileprovision
+*.p12
+*.cer
