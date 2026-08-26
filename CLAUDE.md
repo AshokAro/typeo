@@ -179,6 +179,23 @@ only what happens in between.
   Capturing the view is pinned to the screen's scale and drops frames; replay is
   deterministic because motion is integrated in `advance(to:)`.
 
+## v6 interaction rules (current)
+
+- EVERY interaction slider is bipolar, -1...1, and rests at 0 doing nothing:
+  warp = pucker/bloat, attract = push/pull, gravity = float up/fall down.
+  Shuffle stays 0...1 because a negative percentage is meaningless.
+- The slider UI must read `mode.amountRange`. Hardcoding `0...1` in `sliderRow` is what
+  made pucker and float-up unreachable even though the model already allowed them —
+  the range existed and nothing used it.
+- At amount 0 a mode must be completely inert, wander included. Scale any idle motion
+  by the amount rather than running it unconditionally.
+- Releasing a touch restores the state captured at touch-DOWN
+  (`preInteractionState`), not the laid-out grid. A shuffle applied beforehand must
+  survive the gesture; only what the effect did is undone. `reset()` is the one that
+  goes back to the grid.
+- Attract has a soft boundary at 22% of the canvas beyond each edge. Without it, push
+  at -100% threw the letters ~2200px out on a 1080 canvas and they simply vanished.
+
 ## v5 widget notes
 
 - `TypeoSharedStore` is THE SEAM. It returns the App Group container when the

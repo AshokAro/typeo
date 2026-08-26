@@ -80,8 +80,6 @@ struct EditorView: View {
                             store: store,
                             activeFill: $activeFill,
                             isLocked: $isLocked,
-                            onFont: { showFontPicker = true },
-                            onStyle: { showStylePanel = true },
                             offset: $railOffset,
                             bounds: proxy.size
                         )
@@ -99,6 +97,9 @@ struct EditorView: View {
             }
 
             modeBar
+
+            bottomBar
+                .padding(.horizontal, 16)
         }
         .padding(.bottom, 6)
         .background(Color.black)
@@ -135,11 +136,19 @@ struct EditorView: View {
         .onChange(of: isLocked) { _, locked in
             scene.isLocked = locked
         }
+        // Half height, scrolling inside, and the canvas behind stays interactive so
+        // effects can be tried without dismissing the sheet.
         .sheet(isPresented: $showFontPicker) {
-            FontPickerSheet(store: store).presentationDetents([.medium, .large])
+            FontPickerSheet(store: store)
+                .presentationDetents([.fraction(0.5)])
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStylePanel) {
-            StylePanel(store: store).presentationDetents([.height(460), .large])
+            StylePanel(store: store)
+                .presentationDetents([.fraction(0.5)])
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $isExporting) {
             if let exportImage { ExportSheet(image: exportImage) }
@@ -308,6 +317,7 @@ struct EditorView: View {
         let title: String
         let value: Binding<Double>
         let detail: String
+        let range: ClosedRange<Double>
 
         switch target {
         case let .interaction(mode):
@@ -316,26 +326,47 @@ struct EditorView: View {
                 get: { amounts[mode] ?? mode.defaultAmount },
                 set: { amounts[mode] = $0 }
             )
-            detail = mode == .attract && (amounts[mode] ?? 1) < 0.04 ? "zero gravity" : ""
+            // Use the mode's OWN range. Hardcoding 0...1 here is what made pucker and
+            // float-up unreachable even though the model allowed them.
+            range = mode.amountRange
+            detail = mode.amountDetail(amounts[mode] ?? mode.defaultAmount)
         case .jumble:
             title = "Shuffle"
             value = $jumbleAmount
+            range = 0...1
             detail = "\(letterCount(for: jumbleAmount))/\(glyphCount) letters"
         }
 
-        return HStack(spacing: 12) {
+        let isBipolar = range.lowerBound < 0
+
+        return HStack(spacing: 10) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .frame(width: 58, alignment: .leading)
+                .frame(width: 54, alignment: .leading)
 
-            Slider(value: value, in: 0...1)
+            ZStack {
+                if isBipolar {
+                    // A centre tick, so it is obvious the control rests at zero.
+                    Rectangle()
+                        .fill(Color.white.opacity(0.35))
+                        .frame(width: 1, height: 12)
+                }
+                Slider(value: value, in: range)
+            }
 
-            Text(detail.isEmpty ? "\(Int(value.wrappedValue * 100))%" : detail)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize()
-                .frame(minWidth: 74, alignment: .trailing)
+            Button {
+                value.wrappedValue = isBipolar ? 0 : value.wrappedValue
+            } label: {
+                Text(detail)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 78, alignment: .trailing)
+            }
+            .buttonStyle(.plain)
+            .disabled(!isBipolar)
+            .accessibilityLabel(isBipolar ? "Reset \(title) to zero" : detail)
 
             Button {
                 withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
@@ -358,39 +389,6 @@ struct EditorView: View {
     private func letterCount(for amount: Double) -> Int {
         guard glyphCount > 0, amount > 0 else { return 0 }
         return max(1, Int((Double(glyphCount) * amount).rounded()))
-    }
-
-    private var bottomBar: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
-                Button { showFontPicker = true } label: {
-                    Label(currentFontName, systemImage: "textformat")
-                        .font(.system(size: 14, weight: .medium))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                }
-                .buttonStyle(.glass)
-
-                Button { showStylePanel = true } label: {
-                    Label("Style", systemImage: "slider.horizontal.3")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                }
-                .buttonStyle(.glass)
-
-                if isEditing {
-                    Button { isEditing = false } label: {
-                        Text("Done")
-                            .font(.system(size: 14, weight: .semibold))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.glassProminent)
-                }
-            }
-        }
     }
 
     private var emptyHint: some View {
@@ -466,6 +464,39 @@ struct EditorView: View {
                 isRecordingSheetUp = true
             } catch {
                 recordedVideo = nil
+            }
+        }
+    }
+
+    private var bottomBar: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 8) {
+                Button { showFontPicker = true } label: {
+                    Label(currentFontName, systemImage: "textformat")
+                        .font(.system(size: 14, weight: .medium))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.glass)
+
+                Button { showStylePanel = true } label: {
+                    Label("Style", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.glass)
+
+                if isEditing {
+                    Button { isEditing = false } label: {
+                        Text("Done")
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 9)
+                    }
+                    .buttonStyle(.glassProminent)
+                }
             }
         }
     }

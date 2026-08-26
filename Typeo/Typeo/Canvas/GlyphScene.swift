@@ -42,7 +42,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         switch self {
         case .none:    ""
         case .warp:    "Warp"      // negative puckers, positive bloats
-        case .attract: "Pull"      // 0 is zero gravity, letters drift
+        case .attract: "Pull"      // negative pushes away, positive pulls in
         case .gravity: "Gravity"   // negative floats up, positive falls down
         }
     }
@@ -52,7 +52,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         switch self {
         case .none:    0...0
         case .warp:    -1...1
-        case .attract: 0...1
+        case .attract: -1...1
         case .gravity: -1...1
         }
     }
@@ -61,7 +61,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         switch self {
         case .none:    0
         case .warp:    0
-        case .attract: 0.45
+        case .attract: 0
         case .gravity: 0
         }
     }
@@ -78,7 +78,9 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
             if value < -0.02 { return "float \(Int(-value * 100))%" }
             return "still"
         case .attract:
-            return value < 0.04 ? "zero-g" : "\(Int(value * 100))%"
+            if value > 0.02 { return "pull \(Int(value * 100))%" }
+            if value < -0.02 { return "push \(Int(-value * 100))%" }
+            return "still"
         case .none:
             return ""
         }
@@ -279,6 +281,9 @@ final class GlyphScene: SKScene {
     }
 
     private var motion: [UUID: Motion] = [:]
+    /// Node state captured the moment a touch begins, so releasing undoes only what
+    /// the effect did — a shuffle applied beforehand survives.
+    private var preInteractionState: [UUID: (position: CGPoint, rotation: CGFloat, scale: CGFloat)] = [:]
     private var caretNode: SKSpriteNode?
     private var caretIndex: Int?
     private var touchDownPoint: CGPoint?
@@ -314,7 +319,7 @@ final class GlyphScene: SKScene {
             }
 
         case .attract:
-            guard isHolding, delta > 0 else { break }
+            guard isHolding, delta > 0, abs(interactionAmount) > 0.01 else { break }
             let pull = CGFloat(interactionAmount) * size.width * 5.5
             let damping: CGFloat = 0.90
             let target = touchPoint ?? CGPoint(x: size.width / 2, y: size.height / 2)
@@ -330,8 +335,9 @@ final class GlyphScene: SKScene {
                 dx /= distance
                 dy /= distance
 
-                let wanderX = CGFloat(sin(elapsed * 1.3 + Double(seed) * 6.28)) * size.width * 0.10
-                let wanderY = CGFloat(cos(elapsed * 1.1 + Double(seed) * 6.28)) * size.height * 0.10
+                let wander = CGFloat(abs(interactionAmount))
+                let wanderX = CGFloat(sin(elapsed * 1.3 + Double(seed) * 6.28)) * size.width * 0.10 * wander
+                let wanderY = CGFloat(cos(elapsed * 1.1 + Double(seed) * 6.28)) * size.height * 0.10 * wander
 
                 state.driftX += (dx * pull + wanderX) * delta
                 state.driftY += (dy * pull + wanderY) * delta
@@ -341,6 +347,18 @@ final class GlyphScene: SKScene {
                 node.position.x += state.driftX * delta
                 node.position.y += state.driftY * delta
                 node.zRotation += CGFloat(sin(elapsed * 0.9 + Double(seed) * 6.28)) * 0.02
+
+                // Soft boundary: at full push the letters otherwise shoot far past the
+                // canvas and simply disappear. Let them leave, but not escape.
+                let margin = size.width * 0.22
+                if node.position.x < -margin || node.position.x > size.width + margin {
+                    node.position.x = min(max(node.position.x, -margin), size.width + margin)
+                    state.driftX *= -0.25
+                }
+                if node.position.y < -margin || node.position.y > size.height + margin {
+                    node.position.y = min(max(node.position.y, -margin), size.height + margin)
+                    state.driftY *= -0.25
+                }
                 motion[id] = state
             }
 
@@ -404,6 +422,23 @@ final class GlyphScene: SKScene {
         return glyphNodes.values.reduce(0) { $0 + $1.xScale } / CGFloat(glyphNodes.count)
     }
 
+    var debugMeanAbsRotation: CGFloat {
+        guard !glyphNodes.isEmpty else { return 0 }
+        return glyphNodes.values.reduce(0) { $0 + abs($1.zRotation) } / CGFloat(glyphNodes.count)
+    }
+
+    var debugPreInteractionMeanAbsRotation: CGFloat {
+        guard !preInteractionState.isEmpty else { return 0 }
+        return preInteractionState.values.reduce(0) { $0 + abs($1.rotation) } / CGFloat(preInteractionState.count)
+    }
+
+    func debugMeanDistance(to point: CGPoint) -> CGFloat {
+        guard !glyphNodes.isEmpty else { return 0 }
+        return glyphNodes.values.reduce(0) {
+            $0 + hypot($1.position.x - point.x, $1.position.y - point.y)
+        } / CGFloat(glyphNodes.count)
+    }
+
     var debugHasSpringBackActions: Bool {
         glyphNodes.values.contains { $0.hasActions() }
     }
@@ -413,6 +448,7 @@ final class GlyphScene: SKScene {
         touchDownPoint = point
         isHolding = true
         resetMotion()
+        capturePreInteractionState()
     }
 
     func simulateTouchUp() {
@@ -558,6 +594,7 @@ final class GlyphScene: SKScene {
         touchDownPoint = point
         isHolding = true
         resetMotion()
+        capturePreInteractionState()
         recordTouch()
     }
 
@@ -593,13 +630,22 @@ final class GlyphScene: SKScene {
         touchesEnded(touches, with: event)
     }
 
+    private func capturePreInteractionState() {
+        preInteractionState = glyphNodes.mapValues {
+            (position: $0.position, rotation: $0.zRotation, scale: $0.xScale)
+        }
+    }
+
+    /// Returns every glyph to the state it was in when the touch started — NOT to the
+    /// laid-out grid. A shuffle applied before the gesture stays shuffled.
     private func springBack() {
         for (id, node) in glyphNodes {
-            guard let rest = restPositions[id] else { continue }
+            guard let before = preInteractionState[id] else { continue }
             node.removeAllActions()
             node.run(.group([
-                .move(to: rest, duration: 0.45),
-                .scale(to: 1, duration: 0.45),
+                .move(to: before.position, duration: 0.4),
+                .scale(to: before.scale, duration: 0.4),
+                .rotate(toAngle: before.rotation, duration: 0.4, shortestUnitArc: true),
             ]))
         }
     }

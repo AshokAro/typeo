@@ -17,9 +17,6 @@ struct ToolRail: View {
     let store: CompositionStore
     @Binding var activeFill: FillTarget?
     @Binding var isLocked: Bool
-    let onFont: () -> Void
-    let onStyle: () -> Void
-
     /// Position is remembered for the session so it stays where it was put.
     @Binding var offset: CGSize
     let bounds: CGSize
@@ -47,11 +44,6 @@ struct ToolRail: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Background colour")
-
-            divider
-
-            railButton("textformat", label: "Font", action: onFont)
-            railButton("slider.horizontal.3", label: "Style", action: onStyle)
 
             divider
 
@@ -93,17 +85,6 @@ struct ToolRail: View {
         Rectangle()
             .fill(Color.white.opacity(0.18))
             .frame(width: 20, height: 1)
-    }
-
-    private func railButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .semibold))
-                .frame(width: 30, height: 26)
-                .foregroundStyle(Color.primary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 
     private func paint(for target: FillTarget) -> FillPreview {
