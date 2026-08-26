@@ -11,10 +11,11 @@ import SwiftUI
 struct ContentView: View {
     @State private var store = CompositionStore()
     @State private var library = CompositionLibrary()
+    @State private var pins = WidgetPinStore()
     @State private var showSplash = true
     @State private var selectedTab = Tabs.canvas
 
-    private enum Tabs { case canvas, gallery }
+    private enum Tabs { case canvas, gallery, widget }
 
     var body: some View {
         ZStack {
@@ -23,10 +24,13 @@ struct ContentView: View {
                     EditorView(store: store, library: library)
                 }
                 Tab("Gallery", systemImage: "square.stack", value: Tabs.gallery) {
-                    GalleryView(library: library) { composition in
+                    GalleryView(library: library, pins: pins) { composition in
                         store.load(composition)
                         selectedTab = .canvas
                     }
+                }
+                Tab("Widget", systemImage: "rectangle.grid.2x2", value: Tabs.widget) {
+                    WidgetScreen(library: library, pins: pins)
                 }
             }
 

@@ -55,8 +55,11 @@ only what happens in between.
   EXCLUDED: video, widget.
 - **v4** (DONE): offscreen frame-by-frame render of v3 animations + `AVAssetWriter`
   encoding, saved to Photos or shared. EXCLUDED: widget.
-- **v5**: WidgetKit extension showing a finished, already-exported composition on a
-  timeline. Widgets CANNOT run the live shader/physics canvas. Scope small.
+- **v5** (app side DONE, extension BLOCKED on a paid account): pin compositions to a
+  shared manifest, rotate them on a timeline, preview at real widget sizes in-app.
+  The WidgetKit extension target itself needs an App Group, which needs a paid Apple
+  Developer Program membership. Source is written and waiting in `Typeo/TypeoWidget/`.
+  Widgets CANNOT run the live shader/physics canvas — they show a finished PNG.
 
 ## Screen flow
 1. Splash — static asset, ~1s, no loading logic (nothing to load, local-only)
@@ -112,6 +115,24 @@ only what happens in between.
   integrated by hand in `GlyphScene.advance(to:)`, called by BOTH the live scene's
   update and the offscreen frame renderer. Do not reintroduce `SKPhysicsBody` for
   anything that has to appear in an export.
+
+## v5 widget notes
+
+- `TypeoSharedStore` is THE SEAM. It returns the App Group container when the
+  capability exists and the app's own Documents directory when it does not, so
+  **no code changes when the paid account arrives** — only entitlements.
+- A widget extension has its own sandbox and can ONLY read the app's files through an
+  App Group. A free Personal Team cannot enable that capability, which is the entire
+  reason the extension target does not exist yet.
+- `Typeo/TypeoWidget/` sits OUTSIDE the app target's synchronized group (`Typeo/Typeo`)
+  on purpose, so its source does not compile into the app. `TypeoWidget/README.md` has
+  the exact steps to wire it up.
+- Scheduling lives in `WidgetTimelinePlan`, in the app target, so it is compiled and
+  verified today; the extension's `getTimeline` only maps its slots and loads images.
+- WidgetKit will not honour a rotation faster than roughly 15 minutes. The plan clamps
+  rather than pretending.
+- Anything pinned before the App Group exists is written where the widget cannot see
+  it. Re-pin once after enabling the capability.
 
 ## v4 video notes
 

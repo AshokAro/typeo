@@ -9,6 +9,7 @@ import SwiftUI
 
 struct GalleryView: View {
     let library: CompositionLibrary
+    let pins: WidgetPinStore
     /// Called when a composition is chosen, so the editor can take it over.
     let onOpen: (Composition) -> Void
 
@@ -39,7 +40,10 @@ struct GalleryView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let pendingDeletion { library.delete(pendingDeletion) }
+                if let pendingDeletion {
+                    pins.unpin(pendingDeletion.id)   // otherwise the widget keeps a dangling entry
+                    library.delete(pendingDeletion)
+                }
                 pendingDeletion = nil
             }
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
@@ -54,10 +58,25 @@ struct GalleryView: View {
                         onOpen(composition)
                     } label: {
                         CompositionThumbnail(composition: composition)
+                            .overlay(alignment: .topTrailing) {
+                                if pins.isPinned(composition.id) {
+                                    Image(systemName: "pin.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.black)
+                                        .padding(5)
+                                        .background(.white, in: .circle)
+                                        .padding(6)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button("Open") { onOpen(composition) }
+                        if pins.isPinned(composition.id) {
+                            Button("Remove from Widget") { pins.unpin(composition.id) }
+                        } else {
+                            Button("Add to Widget") { pins.pin(composition) }
+                        }
                         Button("Delete", role: .destructive) { pendingDeletion = composition }
                     }
                 }
