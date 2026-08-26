@@ -40,6 +40,7 @@ struct EditorView: View {
     }
 
     private var currentAmount: Double { amounts[interaction] ?? interaction.defaultAmount }
+    private var isSheetOpen: Bool { showStylePanel || showFontPicker }
     @State private var scene = GlyphScene(
         composition: Composition(),
         size: AspectRatio.square.referenceSize
@@ -61,8 +62,13 @@ struct EditorView: View {
                         composition: store.composition,
                         interaction: interaction,
                         interactionAmount: currentAmount,
-                        availableSize: proxy.size
+                        availableSize: CGSize(
+                            width: proxy.size.width,
+                            height: proxy.size.height * (isSheetOpen ? 0.52 : 1)
+                        )
                     )
+                    .frame(maxHeight: .infinity, alignment: isSheetOpen ? .top : .center)
+                    .animation(.snappy(duration: 0.25), value: isSheetOpen)
                     if store.composition.isEmpty {
                         emptyHint
                     }
@@ -278,7 +284,9 @@ struct EditorView: View {
                 Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
 
                 Button {
-                    store.jumble(.init(amount: jumbleAmount))
+                    store.beginLiveJumble()
+                    store.updateLiveJumble(amount: jumbleAmount)
+                    store.endLiveJumble()
                 } label: {
                     Image(systemName: "shuffle").font(.system(size: 14, weight: .semibold))
                         .frame(width: 30, height: 24)
@@ -287,6 +295,8 @@ struct EditorView: View {
                 .disabled(store.composition.isEmpty)
                 .simultaneousGesture(
                     LongPressGesture(minimumDuration: 0.35).onEnded { _ in
+                        store.beginLiveJumble()
+                        store.updateLiveJumble(amount: jumbleAmount)
                         withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
                     }
                 )
@@ -332,7 +342,13 @@ struct EditorView: View {
             detail = mode.amountDetail(amounts[mode] ?? mode.defaultAmount)
         case .jumble:
             title = "Shuffle"
-            value = $jumbleAmount
+            value = Binding(
+                get: { jumbleAmount },
+                set: { newValue in
+                    jumbleAmount = newValue
+                    store.updateLiveJumble(amount: newValue)   // live, every tick
+                }
+            )
             range = 0...1
             detail = "\(letterCount(for: jumbleAmount))/\(glyphCount) letters"
         }
@@ -369,6 +385,7 @@ struct EditorView: View {
             .accessibilityLabel(isBipolar ? "Reset \(title) to zero" : detail)
 
             Button {
+                if case .jumble = target { store.endLiveJumble() }
                 withAnimation(.snappy(duration: 0.2)) { expandedSlider = nil }
             } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .bold))

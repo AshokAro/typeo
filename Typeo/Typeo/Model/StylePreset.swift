@@ -15,6 +15,7 @@ struct StylePreset: Identifiable, Hashable {
     var textGradient: GradientPaint?
     var background: Background
     var shader: ShaderEffect
+    var backgroundShader: ShaderEffect?
 
     var id: String { name }
 
@@ -22,58 +23,60 @@ struct StylePreset: Identifiable, Hashable {
         StylePreset(
             name: "Neon",
             font: GlyphFont(fontName: nil, design: .rounded),
-            color: RGBAColor(red: 0.55, green: 1, blue: 0.95),
+            color: .white,
             textGradient: nil,
-            background: .solid(RGBAColor(red: 0.03, green: 0.02, blue: 0.08)),
-            shader: ShaderEffect(kind: .bloom, intensity: 0.8)
+            background: .solid(RGBAColor(red: 0.02, green: 0.01, blue: 0.06)),
+            shader: ShaderEffect(kind: .neon, intensity: 0.85, secondary: 0.15),
+            backgroundShader: nil
         ),
         StylePreset(
-            name: "Chrome",
+            name: "Liquid Metal",
             font: GlyphFont(fontName: "Futura-Bold", design: .standard),
             color: .white,
             textGradient: nil,
-            background: .linearGradient(
-                colors: [RGBAColor(red: 0.10, green: 0.11, blue: 0.14),
-                         RGBAColor(red: 0.32, green: 0.34, blue: 0.40)],
-                angleDegrees: 90
-            ),
-            shader: ShaderEffect(kind: .chrome, intensity: 0.9, secondary: 0.6)
+            background: .solid(RGBAColor(red: 0.06, green: 0.07, blue: 0.09)),
+            shader: ShaderEffect(kind: .chrome, intensity: 1.0, secondary: 0.35),
+            backgroundShader: nil
         ),
         StylePreset(
-            name: "Terminal",
-            font: GlyphFont(fontName: nil, design: .monospaced),
-            color: RGBAColor(red: 0.2, green: 1, blue: 0.4),
-            textGradient: nil,
-            background: .solid(RGBAColor(red: 0.01, green: 0.03, blue: 0.01)),
-            shader: ShaderEffect(kind: .matrix, intensity: 0.75, secondary: 0.5)
-        ),
-        StylePreset(
-            name: "Riso",
+            name: "Glass",
             font: GlyphFont(fontName: nil, design: .standard),
-            color: RGBAColor(red: 1, green: 0.25, blue: 0.35),
-            textGradient: nil,
-            background: .solid(RGBAColor(red: 0.96, green: 0.94, blue: 0.86)),
-            shader: ShaderEffect(kind: .halftone, intensity: 0.7)
-        ),
-        StylePreset(
-            name: "Vapor",
-            font: GlyphFont(fontName: nil, design: .serif),
             color: .white,
-            textGradient: .sunset,
+            textGradient: nil,
             background: .linearGradient(
-                colors: [RGBAColor(red: 0.16, green: 0.05, blue: 0.35),
-                         RGBAColor(red: 0.02, green: 0.10, blue: 0.28)],
+                colors: [RGBAColor(red: 0.10, green: 0.22, blue: 0.45),
+                         RGBAColor(red: 0.42, green: 0.16, blue: 0.52)],
                 angleDegrees: 120
             ),
-            shader: ShaderEffect(kind: .glass, intensity: 0.6)
+            shader: ShaderEffect(kind: .glass, intensity: 0.85),
+            backgroundShader: ShaderEffect(kind: .meshGradient, intensity: 0.55, secondary: 0.3)
         ),
         StylePreset(
-            name: "Thermal",
+            name: "Gem Smoke",
+            font: GlyphFont(fontName: nil, design: .serif),
+            color: .white,
+            textGradient: nil,
+            background: .solid(RGBAColor(red: 0.04, green: 0.02, blue: 0.10)),
+            shader: ShaderEffect(kind: .gemSmoke, intensity: 0.9, secondary: 0.45),
+            backgroundShader: ShaderEffect(kind: .grainGradient, intensity: 0.45, secondary: 0.5)
+        ),
+        StylePreset(
+            name: "Heatmap",
             font: GlyphFont(fontName: nil, design: .rounded),
             color: .white,
             textGradient: nil,
             background: .solid(.black),
-            shader: ShaderEffect(kind: .thermal, intensity: 1.0)
+            shader: ShaderEffect(kind: .thermal, intensity: 1.0),
+            backgroundShader: nil
+        ),
+        StylePreset(
+            name: "Dither",
+            font: GlyphFont(fontName: nil, design: .monospaced),
+            color: RGBAColor(red: 0.95, green: 0.95, blue: 0.9),
+            textGradient: nil,
+            background: .solid(RGBAColor(red: 0.08, green: 0.10, blue: 0.14)),
+            shader: ShaderEffect(kind: .dithering, intensity: 0.9, secondary: 0.25),
+            backgroundShader: ShaderEffect(kind: .meshGradient, intensity: 0.8, secondary: 0.7)
         ),
     ]
 

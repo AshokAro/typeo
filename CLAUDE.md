@@ -179,6 +179,28 @@ only what happens in between.
   Capturing the view is pinned to the screen's scale and drops frames; replay is
   deterministic because motion is integrated in `advance(to:)`.
 
+## v6 shader library (current)
+
+- Shader KIND raw values are never removed, only reimplemented. `chrome` now renders
+  liquid metal and `thermal` renders a heatmap; deleting the cases would fail to decode
+  every saved composition, because Kind is a non-optional String enum.
+- Effects run on the TEXT and on the BACKGROUND independently:
+  `Composition.globalShader` and `Composition.backgroundShader` (Optional, additive).
+  The background has its own `SKEffectNode` wrapping the background sprite.
+- Generative shaders (mesh, grain, dither, gem smoke) respect source alpha, so the same
+  code works as a background fill and as a tint on the glyphs.
+- Things that made shaders look wrong, all found by looking at renders:
+  - A luminance LUT does nothing on uniformly white text. Heatmap builds its heat field
+    from BLURRED ALPHA instead, so there is a gradient to map.
+  - A plain golden-angle spiral makes glow taps line up into visible rings. Neon jitters
+    each tap's angle.
+  - Cross-fading two OPPOSITE palettes lands on grey at the midpoint. Mesh rotates hue
+    instead, so the field stays saturated at every slider position.
+  - Inverse-square weighting averages a multi-point gradient toward grey. Mesh uses
+    fourth-power falloff to keep the colour zones distinct.
+- A `DragGesture` on a container swallows taps meant for buttons inside it. The tool
+  rail's drag lives on its handle alone.
+
 ## v6 interaction rules (current)
 
 - EVERY interaction slider is bipolar, -1...1, and rests at 0 doing nothing:

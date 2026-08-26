@@ -31,6 +31,11 @@ enum SpriteShaders {
         case .halftone: halftone
         case .motionBlur: motionBlur
         case .thermal: thermal
+        case .neon: neon
+        case .gemSmoke: gemSmoke
+        case .meshGradient: meshGradient
+        case .grainGradient: grainGradient
+        case .dithering: dithering
         }
 
         let shader = SKShader(source: source)
@@ -78,6 +83,12 @@ enum SpriteShaders {
         p = fract(p * vec2(123.34, 456.21));
         p += dot(p, p + 45.32);
         return fract(p.x * p.y);
+    }
+    vec3 hueRotate(vec3 colour, float angle) {
+        vec3 k = vec3(0.57735, 0.57735, 0.57735);
+        float c = cos(angle);
+        float s = sin(angle);
+        return colour * c + cross(k, colour) * s + k * dot(k, colour) * (1.0 - c);
     }
     float valueNoise(vec2 p) {
         vec2 i = floor(p);
@@ -169,22 +180,27 @@ enum SpriteShaders {
 
 extension SpriteShaders {
 
+    /// Liquid metal: a flowing domain-warped field, not the old static banding, which
+    /// read as stripes rather than moving mercury.
     static let chrome = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
         float a = max(src.a, 0.001);
-        vec3 rgb = src.rgb / a;
+        vec2 uv = v_tex_coord;
+        float t = u_time * 0.22;
 
-        float y = v_tex_coord.y;
-        float bands = sin((y * 16.0 + u_time * 0.5) * 3.14159) * 0.5 + 0.5;
-        float metal = mix(0.22, 1.0, pow(bands, 1.7));
-        vec3 tint = mix(vec3(0.30, 0.33, 0.40), vec3(1.0, 0.99, 0.95), metal);
+        vec2 q = vec2(valueNoise(uv * 3.0 + t), valueNoise(uv * 3.0 + 5.2 - t));
+        vec2 r = vec2(valueNoise(uv * 3.0 + 4.0 * q + t * 0.7),
+                      valueNoise(uv * 3.0 + 4.0 * q + 9.2 - t * 0.6));
+        float flow = valueNoise(uv * 4.0 + 4.0 * r);
 
-        float sweepPos = fract(y * 0.9 - u_time * 0.12);
-        float sweep = smoothstep(0.34, 0.0, abs(sweepPos - 0.5)) * u_secondary;
-        tint = clamp(tint + sweep * 0.45, 0.0, 1.0);
+        float band = fract(flow * 3.0 + u_secondary * 2.0);
+        float sheen = smoothstep(0.40, 0.50, band) * smoothstep(0.60, 0.50, band);
 
-        vec3 outc = mix(rgb, tint, u_amount);
+        vec3 metal = mix(vec3(0.14, 0.16, 0.21), vec3(0.88, 0.92, 1.0), flow);
+        metal = clamp(metal + sheen * 0.95, 0.0, 1.0);
+
+        vec3 outc = mix(src.rgb / a, metal, u_amount);
         gl_FragColor = vec4(outc * src.a, src.a);
     }
     """
@@ -270,27 +286,201 @@ extension SpriteShaders {
     }
     """
 
+    /// Heatmap. The heat field is a BLURRED ALPHA, not luminance: uniformly white
+    /// text has no luminance gradient to map, which is why the old version appeared to
+    /// do nothing at all.
     static let thermal = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+
+        float heat = 0.0;
+        float radius = 12.0 + u_amount * 52.0;
+        for (int i = 0; i < 20; i++) {
+            float t = (float(i) + 0.5) / 20.0;
+            float rr = radius * sqrt(t);
+            float ang = float(i) * 2.39996323;
+            heat += texture2D(u_texture, v_tex_coord + vec2(cos(ang), sin(ang)) * rr * u_texel).a;
+        }
+        heat = clamp((heat / 20.0) * 1.45, 0.0, 1.0);
+
+        vec3 c0 = vec3(0.00, 0.00, 0.16);
+        vec3 c1 = vec3(0.26, 0.00, 0.66);
+        vec3 c2 = vec3(0.95, 0.14, 0.08);
+        vec3 c3 = vec3(1.00, 0.76, 0.05);
+        vec3 c4 = vec3(1.00, 1.00, 0.93);
+
+        vec3 ramp = mix(c0, c1, smoothstep(0.00, 0.25, heat));
+        ramp = mix(ramp, c2, smoothstep(0.25, 0.50, heat));
+        ramp = mix(ramp, c3, smoothstep(0.50, 0.75, heat));
+        ramp = mix(ramp, c4, smoothstep(0.75, 1.00, heat));
+
+        float alpha = clamp(max(src.a, heat * 0.92), 0.0, 1.0);
+        vec3 plain = src.rgb;
+        gl_FragColor = vec4(mix(plain, ramp * alpha, u_amount), alpha);
+    }
+    """
+
+    /// A real neon glow: a coloured falloff built from the alpha field plus the
+    /// original core kept bright on top. The old preset used bloom, whose spiral taps
+    /// read as pinpoints rather than a continuous halo.
+    static let neon = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+
+        float glow = 0.0;
+        float weight = 0.0;
+        float radius = 10.0 + u_amount * 70.0;
+        for (int i = 0; i < 44; i++) {
+            float t = (float(i) + 0.5) / 44.0;
+            float rr = radius * sqrt(t);
+            // Golden angle plus a per-tap jitter: with a plain spiral the taps line up
+            // into visible rings and the halo reads as pinpoints.
+            float ang = float(i) * 2.39996323 + hash21(vec2(float(i), 0.7)) * 1.4;
+            float falloff = 1.0 - t * 0.85;
+            glow += texture2D(u_texture, v_tex_coord + vec2(cos(ang), sin(ang)) * rr * u_texel).a * falloff;
+            weight += falloff;
+        }
+        glow = clamp(glow / max(weight, 0.001) * 2.4, 0.0, 1.0);
+
+        vec3 cool = vec3(0.25, 0.95, 1.00);
+        vec3 warm = vec3(1.00, 0.25, 0.75);
+        vec3 tint = mix(cool, warm, u_secondary);
+
+        vec3 halo = tint * glow * u_amount * 1.5;
+        vec3 core = src.rgb + vec3(1.0) * src.a * 0.35 * u_amount;
+        float alpha = clamp(max(src.a, glow * u_amount), 0.0, 1.0);
+        gl_FragColor = vec4(clamp(core + halo, 0.0, 1.0), alpha);
+    }
+    """
+
+    /// Gem smoke: crystalline facets from a cell grid, with vapour drifting through.
+    static let gemSmoke = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float a = max(src.a, 0.001);
+        vec2 uv = v_tex_coord;
+        float t = u_time * 0.18;
+
+        float cells = mix(4.0, 16.0, u_secondary);
+        vec2 grid = uv * cells;
+        vec2 cell = floor(grid);
+        vec2 frac = fract(grid);
+
+        // Nearest-point cell structure gives flat facets with hard edges.
+        float best = 8.0;
+        float bestId = 0.0;
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                vec2 neighbour = vec2(float(x), float(y));
+                vec2 point = neighbour + vec2(
+                    hash21(cell + neighbour),
+                    hash21(cell + neighbour + 19.7)
+                );
+                float d = length(point - frac);
+                if (d < best) { best = d; bestId = hash21(cell + neighbour + 3.3); }
+            }
+        }
+
+        float facet = 0.35 + 0.65 * bestId;
+        float edge = smoothstep(0.0, 0.14, best);
+
+        float smoke = valueNoise(uv * 3.0 + vec2(t, -t * 0.7));
+        smoke = smoothstep(0.35, 0.85, smoke);
+
+        vec3 gem = mix(vec3(0.18, 0.05, 0.42), vec3(0.55, 0.85, 1.0), facet);
+        gem = mix(gem, vec3(0.95, 0.85, 1.0), smoke * 0.55);
+        gem *= 0.55 + 0.45 * edge;
+
+        vec3 outc = mix(src.rgb / a, clamp(gem, 0.0, 1.0), u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    /// Mesh gradient: drifting colour centres blended by inverse distance. Works as a
+    /// background fill and as a tint on the text, because it respects source alpha.
+    static let meshGradient = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        vec2 uv = v_tex_coord;
+        float t = u_time * 0.16;
+
+        vec2 p1 = vec2(0.28 + 0.20 * sin(t * 1.10), 0.30 + 0.18 * cos(t * 0.90));
+        vec2 p2 = vec2(0.74 + 0.18 * cos(t * 0.80), 0.34 + 0.20 * sin(t * 1.30));
+        vec2 p3 = vec2(0.48 + 0.24 * sin(t * 0.70), 0.76 + 0.16 * cos(t * 1.10));
+        vec2 p4 = vec2(0.20 + 0.16 * cos(t * 1.40), 0.78 + 0.14 * sin(t * 0.60));
+
+        // Rotate the palette's HUE rather than cross-fading between two palettes.
+        // Blending opposite hues 50/50 lands on grey, which is why the field washed out
+        // in the middle of the slider.
+        float shift = u_secondary * 6.2831853;
+        vec3 c1 = hueRotate(vec3(1.00, 0.22, 0.38), shift);
+        vec3 c2 = hueRotate(vec3(0.36, 0.24, 1.00), shift);
+        vec3 c3 = hueRotate(vec3(0.10, 0.88, 0.66), shift);
+        vec3 c4 = hueRotate(vec3(1.00, 0.74, 0.18), shift);
+
+        // Fourth-power falloff. Inverse-SQUARE weighting averages all four colours
+        // toward grey across the middle of the canvas; this keeps the zones distinct.
+        float d1 = distance(uv, p1); float d2 = distance(uv, p2);
+        float d3 = distance(uv, p3); float d4 = distance(uv, p4);
+        float w1 = 1.0 / (0.0008 + d1 * d1 * d1 * d1);
+        float w2 = 1.0 / (0.0008 + d2 * d2 * d2 * d2);
+        float w3 = 1.0 / (0.0008 + d3 * d3 * d3 * d3);
+        float w4 = 1.0 / (0.0008 + d4 * d4 * d4 * d4);
+
+        vec3 mesh = (c1 * w1 + c2 * w2 + c3 * w3 + c4 * w4) / (w1 + w2 + w3 + w4);
+        vec3 outc = mix(src.rgb / max(src.a, 0.001), mesh, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    /// Grain gradient: a soft colour sweep with animated film grain over it.
+    static let grainGradient = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        vec2 uv = v_tex_coord;
+        float t = u_time * 0.5;
+
+        float sweep = clamp(uv.y * 0.7 + uv.x * 0.3, 0.0, 1.0);
+        vec3 top = vec3(0.98, 0.45, 0.22);
+        vec3 bottom = vec3(0.20, 0.15, 0.48);
+        vec3 base = mix(top, bottom, smoothstep(0.0, 1.0, sweep));
+
+        vec2 p = uv / u_texel;
+        float grain = hash21(p * 0.9 + vec2(t * 31.0, t * 17.0)) - 0.5;
+        base = clamp(base + grain * u_secondary * 0.55, 0.0, 1.0);
+
+        vec3 outc = mix(src.rgb / max(src.a, 0.001), base, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    /// Ordered Bayer dithering. Quantises to a few levels per channel and offsets the
+    /// threshold by a 4x4 matrix, which is what gives the retro banded look.
+    static let dithering = helpers + """
     void main() {
         vec4 src = texture2D(u_texture, v_tex_coord);
         float a = max(src.a, 0.001);
         vec3 rgb = src.rgb / a;
 
-        float lum = clamp(dot(rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+        vec2 p = floor(mod(v_tex_coord / u_texel, 4.0));
+        float index = p.x + p.y * 4.0;
 
-        // Four-stop thermal ramp built with mix/step so there is no if/else chain.
-        vec3 c0 = vec3(0.02, 0.00, 0.15);
-        vec3 c1 = vec3(0.55, 0.00, 0.55);
-        vec3 c2 = vec3(1.00, 0.15, 0.05);
-        vec3 c3 = vec3(1.00, 0.78, 0.05);
-        vec3 c4 = vec3(1.00, 1.00, 0.95);
+        // 4x4 Bayer matrix, unrolled: no array indexing in this GLSL subset.
+        float m = 0.0;
+        m += step(index, 0.5)  * 0.0625;  m += step(abs(index -  1.0), 0.4) * 0.5625;
+        m += step(abs(index -  2.0), 0.4) * 0.1875;  m += step(abs(index -  3.0), 0.4) * 0.6875;
+        m += step(abs(index -  4.0), 0.4) * 0.8125;  m += step(abs(index -  5.0), 0.4) * 0.3125;
+        m += step(abs(index -  6.0), 0.4) * 0.9375;  m += step(abs(index -  7.0), 0.4) * 0.4375;
+        m += step(abs(index -  8.0), 0.4) * 0.2500;  m += step(abs(index -  9.0), 0.4) * 0.7500;
+        m += step(abs(index - 10.0), 0.4) * 0.1250;  m += step(abs(index - 11.0), 0.4) * 0.6250;
+        m += step(abs(index - 12.0), 0.4) * 1.0000;  m += step(abs(index - 13.0), 0.4) * 0.5000;
+        m += step(abs(index - 14.0), 0.4) * 0.8750;  m += step(abs(index - 15.0), 0.4) * 0.3750;
 
-        vec3 ramp = mix(c0, c1, smoothstep(0.00, 0.25, lum));
-        ramp = mix(ramp, c2, smoothstep(0.25, 0.50, lum));
-        ramp = mix(ramp, c3, smoothstep(0.50, 0.75, lum));
-        ramp = mix(ramp, c4, smoothstep(0.75, 1.00, lum));
+        float levels = mix(2.0, 6.0, u_secondary);
+        vec3 dithered = floor(rgb * levels + (m - 0.5)) / (levels - 1.0);
+        dithered = clamp(dithered, 0.0, 1.0);
 
-        vec3 outc = mix(rgb, ramp, u_amount);
+        vec3 outc = mix(rgb, dithered, u_amount);
         gl_FragColor = vec4(outc * src.a, src.a);
     }
     """

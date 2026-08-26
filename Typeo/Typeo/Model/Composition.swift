@@ -176,6 +176,7 @@ struct ShaderEffect: Codable, Hashable {
         case none, bloom, heat, noise, glitch
         // v6
         case chrome, glass, matrix, liquify, halftone, motionBlur, thermal
+        case neon, gemSmoke, meshGradient, grainGradient, dithering
 
         var id: String { rawValue }
 
@@ -186,21 +187,29 @@ struct ShaderEffect: Codable, Hashable {
             case .heat:       "Heat"
             case .noise:      "Noise"
             case .glitch:     "Glitch"
-            case .chrome:     "Chrome"
+            case .chrome:     "Liquid Metal"
             case .glass:      "Glass"
             case .matrix:     "Matrix"
             case .liquify:    "Liquify"
             case .halftone:   "Halftone"
             case .motionBlur: "Motion"
-            case .thermal:    "Thermal"
+            case .thermal:    "Heatmap"
+            case .neon:          "Neon"
+            case .gemSmoke:      "Gem Smoke"
+            case .meshGradient:  "Mesh"
+            case .grainGradient: "Grain"
+            case .dithering:     "Dither"
             }
         }
 
         /// Whether the shader reads `time` and therefore needs a running clock.
         var isAnimated: Bool {
             switch self {
-            case .none, .bloom, .glass, .halftone, .motionBlur, .thermal: false
-            case .heat, .noise, .glitch, .chrome, .matrix, .liquify:      true
+            case .none, .bloom, .glass, .halftone, .motionBlur, .thermal, .neon, .dithering:
+                false
+            case .heat, .noise, .glitch, .chrome, .matrix, .liquify,
+                 .gemSmoke, .meshGradient, .grainGradient:
+                true
             }
         }
 
@@ -219,7 +228,12 @@ struct ShaderEffect: Codable, Hashable {
             case .liquify:    90
             case .halftone:   0
             case .motionBlur: 130
-            case .thermal:    0
+            case .thermal:       70
+            case .neon:          90
+            case .gemSmoke:      0
+            case .meshGradient:  0
+            case .grainGradient: 0
+            case .dithering:     0
             }
         }
     }
@@ -231,16 +245,23 @@ struct ShaderEffect: Codable, Hashable {
     /// Whether the second slider is meaningful for this kind.
     var usesSecondary: Bool {
         switch kind {
-        case .motionBlur, .matrix, .chrome: true
+        case .motionBlur, .matrix, .chrome, .neon, .gemSmoke,
+             .meshGradient, .grainGradient, .dithering:
+            true
         default: false
         }
     }
 
     var secondaryLabel: String {
         switch kind {
-        case .motionBlur: "Angle"
-        case .matrix:     "Speed"
-        case .chrome:     "Sheen"
+        case .motionBlur:    "Angle"
+        case .matrix:        "Speed"
+        case .chrome:        "Flow"
+        case .neon:          "Hue"
+        case .gemSmoke:      "Facets"
+        case .meshGradient:  "Palette"
+        case .grainGradient: "Grain"
+        case .dithering:     "Levels"
         default:          ""
         }
     }
@@ -309,6 +330,8 @@ struct Composition: Identifiable, Codable, Hashable {
     /// per-glyph colours are ignored. When nil, each glyph uses its own colour, so
     /// v3's per-letter colour divergence still works.
     var textGradient: GradientPaint?
+    /// v6: shaders can run on the background as well as the text block.
+    var backgroundShader: ShaderEffect?
 
     init(
         id: UUID = UUID(),
@@ -318,6 +341,7 @@ struct Composition: Identifiable, Codable, Hashable {
         globalShader: ShaderEffect = .none,
         glyphs: [Glyph] = [],
         textGradient: GradientPaint? = nil,
+        backgroundShader: ShaderEffect? = nil,
         alignment: TextBlockAlignment? = nil,
         letterSpacing: Double? = nil,
         lineHeightMultiple: Double? = nil
@@ -329,6 +353,7 @@ struct Composition: Identifiable, Codable, Hashable {
         self.globalShader = globalShader
         self.glyphs = glyphs
         self.textGradient = textGradient
+        self.backgroundShader = backgroundShader
         self.alignment = alignment
         self.letterSpacing = letterSpacing
         self.lineHeightMultiple = lineHeightMultiple

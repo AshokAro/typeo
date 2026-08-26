@@ -107,6 +107,7 @@ final class GlyphScene: SKScene {
     private var effectNode = SKEffectNode()   // outer: the FX shader
     private var fillNode = SKEffectNode()     // inner: the text gradient fill
     private var backgroundNode = SKSpriteNode()
+    private var backgroundEffect = SKEffectNode()   // its own shader, independent of the text
     private var touchPoint: CGPoint?
     private var isHolding = false
 
@@ -151,10 +152,14 @@ final class GlyphScene: SKScene {
 
         size = composition.aspectRatio.referenceSize
 
+        backgroundEffect = SKEffectNode()
+        backgroundEffect.zPosition = -10
+        backgroundEffect.shouldRasterize = false
+        addChild(backgroundEffect)
+
         backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
         backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
-        backgroundNode.zPosition = -10
-        addChild(backgroundNode)
+        backgroundEffect.addChild(backgroundNode)
 
         effectNode = SKEffectNode()
         effectNode.shouldEnableEffects = composition.globalShader.kind != .none
@@ -226,8 +231,7 @@ final class GlyphScene: SKScene {
         backgroundNode.removeFromParent()
         backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
         backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
-        backgroundNode.zPosition = -10
-        addChild(backgroundNode)
+        backgroundEffect.addChild(backgroundNode)
 
         for glyph in composition.glyphs {
             guard let node = glyphNodes[glyph.id] else { continue }
@@ -248,8 +252,23 @@ final class GlyphScene: SKScene {
         fillNode.shouldEnableEffects = true
     }
 
+    private func applyBackgroundShader() {
+        guard let effect = composition.backgroundShader,
+              let shader = SpriteShaders.shader(for: effect) else {
+            backgroundEffect.shader = nil
+            backgroundEffect.shouldEnableEffects = false
+            return
+        }
+        shader.uniformNamed("u_texel")?.vectorFloat2Value = vector_float2(
+            Float(1.0 / size.width), Float(1.0 / size.height)
+        )
+        backgroundEffect.shader = shader
+        backgroundEffect.shouldEnableEffects = true
+    }
+
     private func applyShader() {
         applyFill()
+        applyBackgroundShader()
         guard let shader = SpriteShaders.shader(for: composition.globalShader) else {
             effectNode.shader = nil
             effectNode.shouldEnableEffects = false

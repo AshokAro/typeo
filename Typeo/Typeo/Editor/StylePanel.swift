@@ -8,9 +8,48 @@
 
 import SwiftUI
 
+enum EffectTarget: String, Hashable {
+    case text, background
+}
+
 struct StylePanel: View {
     let store: CompositionStore
     @Environment(\.dismiss) private var dismiss
+    @State private var effectTarget: EffectTarget = .text
+
+    private var activeEffect: ShaderEffect {
+        effectTarget == .text ? store.composition.globalShader : store.backgroundShader
+    }
+
+    private var kindBinding: Binding<ShaderEffect.Kind> {
+        Binding(
+            get: { activeEffect.kind },
+            set: { newValue in
+                if effectTarget == .text { store.setEffectKind(newValue) }
+                else { store.setBackgroundEffectKind(newValue) }
+            }
+        )
+    }
+
+    private var intensityBinding: Binding<Double> {
+        Binding(
+            get: { activeEffect.intensity },
+            set: { newValue in
+                if effectTarget == .text { store.setEffectIntensity(newValue) }
+                else { store.setBackgroundEffectIntensity(newValue) }
+            }
+        )
+    }
+
+    private var secondaryBinding: Binding<Double> {
+        Binding(
+            get: { activeEffect.resolvedSecondary },
+            set: { newValue in
+                if effectTarget == .text { store.setEffectSecondary(newValue) }
+                else { store.setBackgroundEffectSecondary(newValue) }
+            }
+        )
+    }
 
     var body: some View {
         NavigationStack {
@@ -95,39 +134,43 @@ struct StylePanel: View {
                 }
 
                 Section("Effect") {
-                    Picker("Effect", selection: effectKindBinding) {
+                    // Text and background carry separate shaders, so the sheet needs a
+                    // target before anything else on this row makes sense.
+                    Picker("Applies to", selection: $effectTarget) {
+                        Text("Text").tag(EffectTarget.text)
+                        Text("Background").tag(EffectTarget.background)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Picker("Effect", selection: kindBinding) {
                         ForEach(ShaderEffect.Kind.allCases) { kind in
                             Text(kind.label).tag(kind)
                         }
                     }
 
-                    if store.composition.globalShader.usesSecondary {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(store.composition.globalShader.secondaryLabel)
-                                Spacer()
-                                Text(store.composition.globalShader.resolvedSecondary,
-                                     format: .percent.precision(.fractionLength(0)))
-                                    .font(.system(.body, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Slider(value: Binding(
-                                get: { store.composition.globalShader.resolvedSecondary },
-                                set: { store.setEffectSecondary($0) }
-                            ), in: 0...1)
-                        }
-                    }
-
-                    if store.composition.globalShader.kind != .none {
+                    if activeEffect.kind != .none {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text("Intensity")
                                 Spacer()
-                                Text(store.composition.globalShader.intensity, format: .percent.precision(.fractionLength(0)))
+                                Text(activeEffect.intensity, format: .percent.precision(.fractionLength(0)))
                                     .font(.system(.body, design: .monospaced))
                                     .foregroundStyle(.secondary)
                             }
-                            Slider(value: store.intensityBinding, in: 0...1)
+                            Slider(value: intensityBinding, in: 0...1)
+                        }
+
+                        if activeEffect.usesSecondary {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(activeEffect.secondaryLabel)
+                                    Spacer()
+                                    Text(activeEffect.resolvedSecondary, format: .percent.precision(.fractionLength(0)))
+                                        .font(.system(.body, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Slider(value: secondaryBinding, in: 0...1)
+                            }
                         }
                     }
                 }
@@ -140,12 +183,5 @@ struct StylePanel: View {
                 }
             }
         }
-    }
-
-    private var effectKindBinding: Binding<ShaderEffect.Kind> {
-        Binding(
-            get: { store.composition.globalShader.kind },
-            set: { store.setEffectKind($0) }
-        )
     }
 }

@@ -58,27 +58,32 @@ struct ToolRail: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isLocked ? "Unlock effect" : "Lock effect in place")
 
+            // The drag lives on THIS handle alone. Attached to the whole rail it
+            // intercepted every touch, so the buttons inside stopped responding and
+            // the tap fell through to the canvas behind.
             Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(height: 16)
+                .frame(width: 30, height: 20)
+                .contentShape(.rect)
+                .gesture(
+                    DragGesture()
+                        .updating($drag) { value, state, _ in state = value.translation }
+                        .onEnded { value in
+                            let limitX = bounds.width * 0.42
+                            let limitY = bounds.height * 0.42
+                            offset.width = min(max(offset.width + value.translation.width, -limitX), limitX)
+                            offset.height = min(max(offset.height + value.translation.height, -limitY), limitY)
+                        }
+                )
                 .accessibilityLabel("Drag to move the controls")
         }
         .padding(7)
         .glassEffect(.regular, in: .rect(cornerRadius: 22))
         .fixedSize()
+        // Solid hit area, so a tap on the rail never reaches the canvas behind it.
+        .contentShape(.rect(cornerRadius: 22))
         .offset(x: offset.width + drag.width, y: offset.height + drag.height)
-        .gesture(
-            DragGesture()
-                .updating($drag) { value, state, _ in state = value.translation }
-                .onEnded { value in
-                    // Clamp so the rail can never be dragged off the screen.
-                    let limitX = bounds.width * 0.42
-                    let limitY = bounds.height * 0.42
-                    offset.width = min(max(offset.width + value.translation.width, -limitX), limitX)
-                    offset.height = min(max(offset.height + value.translation.height, -limitY), limitY)
-                }
-        )
     }
 
     private var divider: some View {

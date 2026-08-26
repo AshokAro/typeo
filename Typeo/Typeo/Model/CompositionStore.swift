@@ -244,6 +244,53 @@ final class CompositionStore {
         var amount: Double = 1
     }
 
+    // MARK: Live shuffle
+    //
+    // Dragging the amount re-applies immediately. The randomised VALUES are generated
+    // once when the drag starts and the order is fixed, so moving the slider only
+    // changes HOW MANY letters are affected — it does not reroll them on every tick,
+    // which looked like chaos rather than a control.
+
+    private var liveBaseline: [Glyph]?
+    private var liveOrder: [Int] = []
+    private var liveValues: [Int: (font: GlyphFont, size: CGFloat, rotation: Double)] = [:]
+
+    func beginLiveJumble() {
+        checkpoint("jumble")
+        liveBaseline = composition.glyphs
+        liveOrder = composition.glyphs.indices
+            .filter { composition.glyphs[$0].role == .glyph }
+            .shuffled()
+        liveValues = [:]
+        for index in liveOrder {
+            liveValues[index] = (
+                font: FontCatalog.all.randomElement()?.glyphFont ?? style.font,
+                size: (style.size * CGFloat.random(in: 0.6...1.5)).rounded(),
+                rotation: Double.random(in: -20...20)
+            )
+        }
+    }
+
+    func updateLiveJumble(amount: Double) {
+        guard let baseline = liveBaseline else { return }
+        composition.glyphs = baseline
+
+        let fraction = min(max(amount, 0), 1)
+        let count = fraction <= 0 ? 0 : max(1, Int((Double(liveOrder.count) * fraction).rounded()))
+        for index in liveOrder.prefix(count) {
+            guard let value = liveValues[index], composition.glyphs.indices.contains(index) else { continue }
+            composition.glyphs[index].font = value.font
+            composition.glyphs[index].size = value.size
+            composition.glyphs[index].rotation = value.rotation
+        }
+    }
+
+    func endLiveJumble() {
+        liveBaseline = nil
+        liveOrder = []
+        liveValues = [:]
+    }
+
     func jumble(_ options: JumbleOptions = JumbleOptions()) {
         checkpoint("jumble")
 
@@ -306,6 +353,38 @@ final class CompositionStore {
         }
     }
 
+    // MARK: Background effect
+
+    var backgroundShader: ShaderEffect {
+        composition.backgroundShader ?? .none
+    }
+
+    func setBackgroundEffectKind(_ kind: ShaderEffect.Kind) {
+        checkpoint("bgEffect")
+        if kind == .none {
+            composition.backgroundShader = nil
+            return
+        }
+        var effect = composition.backgroundShader ?? ShaderEffect(kind: kind, intensity: 0.6)
+        effect.kind = kind
+        if effect.intensity == 0 { effect.intensity = 0.6 }
+        composition.backgroundShader = effect
+    }
+
+    func setBackgroundEffectIntensity(_ value: Double) {
+        checkpoint("bgEffect", coalesceFor: 0.8)
+        guard var effect = composition.backgroundShader else { return }
+        effect.intensity = value
+        composition.backgroundShader = effect
+    }
+
+    func setBackgroundEffectSecondary(_ value: Double) {
+        checkpoint("bgEffect", coalesceFor: 0.8)
+        guard var effect = composition.backgroundShader else { return }
+        effect.secondary = value
+        composition.backgroundShader = effect
+    }
+
     func setEffectSecondary(_ value: Double) {
         checkpoint("effect", coalesceFor: 0.8)
         composition.globalShader.secondary = value
@@ -331,6 +410,7 @@ final class CompositionStore {
         composition.textGradient = preset.textGradient
         composition.background = preset.background
         composition.globalShader = preset.shader
+        composition.backgroundShader = preset.backgroundShader
     }
 
     // MARK: Fills
