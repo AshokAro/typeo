@@ -21,6 +21,11 @@ struct EditorView: View {
     @State private var interaction: GlyphInteraction = .none
     @State private var isRecordingSheetUp = false
     @State private var activeFill: FillTarget?
+    @State private var isLocked = false
+    @State private var railOffset: CGSize = .zero
+    @State private var recordedVideo: URL?
+    @State private var recordingRemaining: Int?
+    @State private var recordingTask: Task<Void, Never>?
     @State private var caretIndex: Int?
     @State private var isEditing = false
     @State private var expandedSlider: SliderTarget?
@@ -45,8 +50,9 @@ struct EditorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             topBar
+                .padding(.horizontal, 16)
 
             GeometryReader { proxy in
                 ZStack {
@@ -60,6 +66,9 @@ struct EditorView: View {
                     if store.composition.isEmpty {
                         emptyHint
                     }
+                    if let countdown = recordingRemaining {
+                        recordingOverlay(countdown)
+                    }
 
                     HStack(alignment: .top, spacing: 8) {
                         Spacer(minLength: 0)
@@ -67,22 +76,31 @@ struct EditorView: View {
                             FillEditor(store: store, target: activeFill)
                                 .transition(.move(edge: .trailing).combined(with: .opacity))
                         }
-                        FillRail(store: store, active: $activeFill)
+                        ToolRail(
+                            store: store,
+                            activeFill: $activeFill,
+                            isLocked: $isLocked,
+                            onFont: { showFontPicker = true },
+                            onStyle: { showStylePanel = true },
+                            offset: $railOffset,
+                            bounds: proxy.size
+                        )
                     }
                     .padding(.trailing, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .padding(.horizontal, 16)
 
             if let expandedSlider {
                 sliderRow(for: expandedSlider)
+                    .padding(.horizontal, 16)
             }
-            perLetterBar
-            bottomBar
+
+            modeBar
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.bottom, 6)
         .background(Color.black)
         .background(
             KeyInputBridge(
@@ -112,20 +130,24 @@ struct EditorView: View {
             if !editing { scene.setCaret(index: nil); caretIndex = nil }
         }
         .onChange(of: interaction) { _, mode in
-            // Interaction modes take over touches, so editing has to stop.
             if mode != .none { isEditing = false }
+        }
+        .onChange(of: isLocked) { _, locked in
+            scene.isLocked = locked
         }
         .sheet(isPresented: $showFontPicker) {
             FontPickerSheet(store: store).presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showStylePanel) {
-            StylePanel(store: store).presentationDetents([.height(420), .large])
+            StylePanel(store: store).presentationDetents([.height(460), .large])
         }
         .sheet(isPresented: $isExporting) {
             if let exportImage { ExportSheet(image: exportImage) }
         }
         .sheet(isPresented: $isRecordingSheetUp) {
-            RecordSheet(composition: store.composition, interaction: interaction)
+            if let recordedVideo {
+                RecordedVideoSheet(url: recordedVideo, aspectRatio: store.composition.aspectRatio)
+            }
         }
     }
 
@@ -133,149 +155,152 @@ struct EditorView: View {
 
     private var topBar: some View {
         HStack(spacing: 8) {
-            // Scrolls, so adding modes later never squeezes the labels again.
-            ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 8) {
-                    HStack(spacing: 8) {
-                        ForEach(AspectRatio.allCases) { ratio in
-                            AspectButton(ratio: ratio, isSelected: store.composition.aspectRatio == ratio) {
-                                store.setAspectRatio(ratio)
-                            }
-                        }
-
-                        Button { store.undo() } label: {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 14, weight: .semibold))
-                                .frame(width: 30, height: 26)
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(!store.canUndo)
-                        .accessibilityLabel("Undo")
-
-                        Button { store.redo() } label: {
-                            Image(systemName: "arrow.uturn.forward")
-                                .font(.system(size: 14, weight: .semibold))
-                                .frame(width: 30, height: 26)
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(!store.canRedo)
-                        .accessibilityLabel("Redo")
+            // Three pills collapsed into one menu, which is what freed room for
+            // undo/redo without scrolling.
+            Menu {
+                Picker("Aspect ratio", selection: Binding(
+                    get: { store.composition.aspectRatio },
+                    set: { store.setAspectRatio($0) }
+                )) {
+                    ForEach(AspectRatio.allCases) { ratio in
+                        Label(ratio.label, systemImage: ratio.systemImage).tag(ratio)
                     }
-                    .padding(.trailing, 8)
                 }
-            }
-            .scrollClipDisabled(false)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.92),
-                        .init(color: .black.opacity(0), location: 1),
-                    ],
-                    startPoint: .leading, endPoint: .trailing
-                )
-            )
-
-            // Pinned: must never scroll out of reach.
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button { store.newComposition() } label: {
-                        Image(systemName: "plus").font(.system(size: 15, weight: .semibold))
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.glass)
-                    .accessibilityLabel("New composition")
-
-                    Button { saveToLibrary() } label: {
-                        Image(systemName: didSave ? "checkmark" : "square.and.arrow.down")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.glass)
-                    .disabled(store.composition.isEmpty)
-                    .accessibilityLabel("Save to gallery")
-
-                    Button { prepareExport() } label: {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(store.composition.isEmpty)
-                    .accessibilityLabel("Export")
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: store.composition.aspectRatio.systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(store.composition.aspectRatio.label)
+                        .font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
                 }
+                .frame(height: 26)
+                .padding(.horizontal, 10)
             }
+            .buttonStyle(.glass)
+            .accessibilityLabel("Aspect ratio \(store.composition.aspectRatio.label)")
+
+            Button { store.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 28, height: 26)
+            }
+            .buttonStyle(.glass)
+            .disabled(!store.canUndo)
+            .accessibilityLabel("Undo")
+
+            Button { store.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 28, height: 26)
+            }
+            .buttonStyle(.glass)
+            .disabled(!store.canRedo)
+            .accessibilityLabel("Redo")
+
+            Spacer(minLength: 4)
+
+            Button { store.newComposition() } label: {
+                Image(systemName: "plus").font(.system(size: 15, weight: .semibold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("New composition")
+
+            Button { saveToLibrary() } label: {
+                Image(systemName: didSave ? "checkmark" : "square.and.arrow.down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glass)
+            .disabled(store.composition.isEmpty)
+            .accessibilityLabel("Save to gallery")
+
+            // Share is secondary now, and carries the photo/video choice.
+            Menu {
+                Button {
+                    prepareExport()
+                } label: {
+                    Label("Save as Photo", systemImage: "photo")
+                }
+                Button {
+                    beginVideoRecording()
+                } label: {
+                    Label("Record Video", systemImage: "video")
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.glass)
+            .disabled(store.composition.isEmpty)
+            .accessibilityLabel("Share")
         }
     }
 
     /// v3/v6. Everything on this row writes DIFFERENT values to individual glyphs.
-    /// Long-press a mode or the shuffle button to reveal its slider.
-    private var perLetterBar: some View {
+    /// Long-press a mode to reveal its slider.
+    private var modeBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    ForEach(GlyphInteraction.allCases) { mode in
-                        InteractionButton(mode: mode, isSelected: interaction == mode) {
-                            interaction = mode
-                            if mode == .none {
-                                scene.reset()
-                                expandedSlider = nil
-                            } else {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    expandedSlider = .interaction(mode)
-                                }
-                            }
-                        } onLongPress: {
-                            guard mode != .none else { return }
-                            interaction = mode
+            HStack(spacing: 8) {
+                ForEach(GlyphInteraction.allCases) { mode in
+                    InteractionButton(mode: mode, isSelected: interaction == mode) {
+                        interaction = mode
+                        if mode == .none {
+                            scene.reset()
+                            expandedSlider = nil
+                        } else {
                             withAnimation(.snappy(duration: 0.2)) {
                                 expandedSlider = .interaction(mode)
                             }
                         }
-                    }
-
-                    Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
-
-                    Button {
-                        captureSceneTransforms()
-                        isRecordingSheetUp = true
-                    } label: {
-                        Image(systemName: "video").font(.system(size: 14, weight: .semibold))
-                            .frame(width: 30, height: 24)
-                    }
-                    .buttonStyle(.glass)
-                    .accessibilityLabel("Record video")
-
-                    Button {
-                        store.jumble(.init(amount: jumbleAmount))
-                    } label: {
-                        Image(systemName: "shuffle").font(.system(size: 14, weight: .semibold))
-                            .frame(width: 30, height: 24)
-                    }
-                    .buttonStyle(.glass)
-                    .disabled(store.composition.isEmpty)
-                    .simultaneousGesture(
-                        LongPressGesture(minimumDuration: 0.35).onEnded { _ in
-                            withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
+                    } onLongPress: {
+                        guard mode != .none else { return }
+                        interaction = mode
+                        withAnimation(.snappy(duration: 0.2)) {
+                            expandedSlider = .interaction(mode)
                         }
-                    )
-                    .accessibilityLabel("Shuffle letters. Long press for amount.")
-
-                    Button {
-                        store.unjumble()
-                        scene.reset()
-                    } label: {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 30, height: 24)
                     }
-                    .buttonStyle(.glass)
-                    .disabled(!store.isJumbled)
-                    .accessibilityLabel("Reset letters")
                 }
-                .padding(.trailing, 8)
+
+                Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
+
+                Button {
+                    store.jumble(.init(amount: jumbleAmount))
+                } label: {
+                    Image(systemName: "shuffle").font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 24)
+                }
+                .buttonStyle(.glass)
+                .disabled(store.composition.isEmpty)
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.35).onEnded { _ in
+                        withAnimation(.snappy(duration: 0.2)) { expandedSlider = .jumble }
+                    }
+                )
+                .accessibilityLabel("Shuffle letters. Long press for amount.")
+
+                Button {
+                    store.unjumble()
+                    scene.reset()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 24)
+                }
+                .buttonStyle(.glass)
+                .disabled(!store.isJumbled)
+                .accessibilityLabel("Reset letters")
             }
+            // Vertical room so a pressed pill's glass is not sliced off, and the row
+            // runs edge to edge instead of stopping at the page margin.
+            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
         }
+        .scrollClipDisabled()
     }
 
     // Not @ViewBuilder: it computes bindings first and returns a single view.
@@ -397,6 +422,71 @@ struct EditorView: View {
             try? await Task.sleep(for: .seconds(1.6))
             withAnimation(.snappy) { didSave = false }
         }
+    }
+
+    // MARK: Video
+
+    private static let recordingSeconds = 4
+
+    /// Records what you do on the canvas for a few seconds, then replays those touches
+    /// offscreen at full resolution. Capturing the live view instead would be pinned to
+    /// the screen's scale and would drop frames under load.
+    private func beginVideoRecording() {
+        guard !store.composition.isEmpty, recordingRemaining == nil else { return }
+        isEditing = false
+        activeFill = nil
+        recordedVideo = nil
+
+        scene.beginTouchRecording()
+        let seconds = Self.recordingSeconds
+        recordingRemaining = seconds
+
+        recordingTask = Task {
+            for remaining in stride(from: seconds, through: 1, by: -1) {
+                recordingRemaining = remaining
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { recordingRemaining = nil; return }
+            }
+            recordingRemaining = nil
+
+            let track = scene.endTouchRecording()
+            do {
+                let url = try await VideoExporter.export(
+                    composition: store.composition,
+                    interaction: interaction,
+                    interactionAmount: currentAmount,
+                    touchTrack: track,
+                    settings: VideoExportSettings(
+                        duration: Double(seconds),
+                        framesPerSecond: 30,
+                        scale: 1
+                    )
+                )
+                recordedVideo = url
+                isRecordingSheetUp = true
+            } catch {
+                recordedVideo = nil
+            }
+        }
+    }
+
+    private func recordingOverlay(_ remaining: Int) -> some View {
+        VStack {
+            HStack(spacing: 7) {
+                Circle().fill(.red).frame(width: 9, height: 9)
+                Text("Recording · \(remaining)s")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.top, 12)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Recording, \(remaining) seconds left")
     }
 
     private func prepareExport() {

@@ -24,12 +24,20 @@ enum SpriteShaders {
         case .heat:   heat
         case .noise:  noise
         case .glitch: glitch
+        case .chrome: chrome
+        case .glass: glass
+        case .matrix: matrix
+        case .liquify: liquify
+        case .halftone: halftone
+        case .motionBlur: motionBlur
+        case .thermal: thermal
         }
 
         let shader = SKShader(source: source)
         shader.uniforms = [
             SKUniform(name: "u_amount", float: Float(effect.intensity)),
             SKUniform(name: "u_time_offset", float: 0),
+            SKUniform(name: "u_secondary", float: Float(effect.resolvedSecondary)),
             SKUniform(name: "u_texel", vectorFloat2: vector_float2(0.001, 0.001)),
         ]
         return shader
@@ -65,7 +73,7 @@ enum SpriteShaders {
     """
 
     /// Shared noise helpers, prepended to every shader.
-    private static let helpers = """
+    static let helpers = """
     float hash21(vec2 p) {
         p = fract(p * vec2(123.34, 456.21));
         p += dot(p, p + 45.32);
@@ -144,6 +152,146 @@ enum SpriteShaders {
         vec4 g = texture2D(u_texture, shifted);
         vec4 b = texture2D(u_texture, shifted - vec2(split, 0.0));
         gl_FragColor = vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+    }
+    """
+}
+
+
+// MARK: - v6 shader library
+//
+// Written defensively for SKShader's GLSL ES subset: no early `return` inside main,
+// no extra helper functions beyond the shared noise ones, and no if/else-if chains.
+// A shader that fails to compile is NOT reported — SpriteKit silently renders the
+// node unshaded — so these constraints are cheaper than debugging a silent no-op.
+//
+// Colour is premultiplied: divide by alpha to read true RGB, multiply back on output,
+// and never modify alpha or the glyph edges fringe.
+
+extension SpriteShaders {
+
+    static let chrome = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        float y = v_tex_coord.y;
+        float bands = sin((y * 16.0 + u_time * 0.5) * 3.14159) * 0.5 + 0.5;
+        float metal = mix(0.22, 1.0, pow(bands, 1.7));
+        vec3 tint = mix(vec3(0.30, 0.33, 0.40), vec3(1.0, 0.99, 0.95), metal);
+
+        float sweepPos = fract(y * 0.9 - u_time * 0.12);
+        float sweep = smoothstep(0.34, 0.0, abs(sweepPos - 0.5)) * u_secondary;
+        tint = clamp(tint + sweep * 0.45, 0.0, 1.0);
+
+        vec3 outc = mix(rgb, tint, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    static let glass = helpers + """
+    void main() {
+        vec2 uv = v_tex_coord;
+        vec2 e = u_texel * 3.0;
+        float ax = texture2D(u_texture, uv + vec2(e.x, 0.0)).a
+                 - texture2D(u_texture, uv - vec2(e.x, 0.0)).a;
+        float ay = texture2D(u_texture, uv + vec2(0.0, e.y)).a
+                 - texture2D(u_texture, uv - vec2(0.0, e.y)).a;
+
+        vec2 bend = vec2(ax, ay) * u_amount * u_texel * 2600.0;
+        vec4 src = texture2D(u_texture, uv - bend);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        float spec = pow(max(0.0, -(ax * 0.6 + ay * 0.8)), 1.5) * u_amount * 2.4;
+        vec3 outc = clamp(rgb * (0.82 + 0.18 * u_amount) + spec, 0.0, 1.0);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    static let matrix = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        vec2 p = v_tex_coord / u_texel;
+        float cell = 24.0;
+        float column = floor(p.x / cell);
+        float speed = (140.0 + hash21(vec2(column, 3.7)) * 320.0) * (0.35 + u_secondary * 1.3);
+        float row = floor((p.y + u_time * speed) / cell);
+        float lit = step(0.42, hash21(vec2(column, row)));
+        float trail = fract((p.y + u_time * speed) / cell);
+
+        vec3 rain = vec3(0.10, 1.0, 0.32) * lit * (0.35 + 0.65 * trail);
+        vec3 outc = mix(rgb, rain, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    static let liquify = helpers + """
+    void main() {
+        vec2 uv = v_tex_coord;
+        float n1 = valueNoise(uv * 4.0 + vec2(u_time * 0.28, 0.0));
+        float n2 = valueNoise(uv * 6.0 - vec2(0.0, u_time * 0.21));
+        vec2 warp = vec2(n1 - 0.5, n2 - 0.5) * u_amount * 0.14;
+        gl_FragColor = texture2D(u_texture, uv + warp);
+    }
+    """
+
+    static let halftone = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        vec2 p = v_tex_coord / u_texel;
+        float scale = mix(16.0, 4.0, u_amount);
+        vec2 grid = mod(p, scale) - scale * 0.5;
+        float lum = clamp(dot(rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+        float radius = scale * 0.52 * sqrt(lum);
+        float ink = step(length(grid), radius);
+
+        vec3 outc = mix(rgb, rgb * ink, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
+    }
+    """
+
+    static let motionBlur = helpers + """
+    void main() {
+        float angle = u_secondary * 3.14159265;
+        vec2 dir = vec2(cos(angle), sin(angle)) * u_texel * u_amount * 110.0;
+        vec4 accumulated = vec4(0.0);
+        for (int i = 0; i < 13; i++) {
+            float t = float(i) / 12.0 - 0.5;
+            accumulated += texture2D(u_texture, v_tex_coord + dir * t);
+        }
+        gl_FragColor = accumulated / 13.0;
+    }
+    """
+
+    static let thermal = helpers + """
+    void main() {
+        vec4 src = texture2D(u_texture, v_tex_coord);
+        float a = max(src.a, 0.001);
+        vec3 rgb = src.rgb / a;
+
+        float lum = clamp(dot(rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+
+        // Four-stop thermal ramp built with mix/step so there is no if/else chain.
+        vec3 c0 = vec3(0.02, 0.00, 0.15);
+        vec3 c1 = vec3(0.55, 0.00, 0.55);
+        vec3 c2 = vec3(1.00, 0.15, 0.05);
+        vec3 c3 = vec3(1.00, 0.78, 0.05);
+        vec3 c4 = vec3(1.00, 1.00, 0.95);
+
+        vec3 ramp = mix(c0, c1, smoothstep(0.00, 0.25, lum));
+        ramp = mix(ramp, c2, smoothstep(0.25, 0.50, lum));
+        ramp = mix(ramp, c3, smoothstep(0.50, 0.75, lum));
+        ramp = mix(ramp, c4, smoothstep(0.75, 1.00, lum));
+
+        vec3 outc = mix(rgb, ramp, u_amount);
+        gl_FragColor = vec4(outc * src.a, src.a);
     }
     """
 }

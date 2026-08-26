@@ -72,11 +72,6 @@ struct GalleryView: View {
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button("Open") { onOpen(composition) }
-                        if pins.isPinned(composition.id) {
-                            Button("Remove from Widget") { pins.unpin(composition.id) }
-                        } else {
-                            Button("Add to Widget") { pins.pin(composition) }
-                        }
                         Button("Delete", role: .destructive) { pendingDeletion = composition }
                     }
                 }

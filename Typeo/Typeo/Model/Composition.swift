@@ -168,27 +168,39 @@ struct GlyphFont: Codable, Hashable {
 struct ShaderEffect: Codable, Hashable {
     var kind: Kind
     var intensity: Double
+    /// Second parameter for shaders that need one (motion-blur angle, matrix speed).
+    /// Optional for the same decode reason as every other v6 field.
+    var secondary: Double?
 
     enum Kind: String, Codable, CaseIterable, Identifiable, Hashable {
         case none, bloom, heat, noise, glitch
+        // v6
+        case chrome, glass, matrix, liquify, halftone, motionBlur, thermal
 
         var id: String { rawValue }
 
         var label: String {
             switch self {
-            case .none:   "None"
-            case .bloom:  "Bloom"
-            case .heat:   "Heat"
-            case .noise:  "Noise"
-            case .glitch: "Glitch"
+            case .none:       "None"
+            case .bloom:      "Bloom"
+            case .heat:       "Heat"
+            case .noise:      "Noise"
+            case .glitch:     "Glitch"
+            case .chrome:     "Chrome"
+            case .glass:      "Glass"
+            case .matrix:     "Matrix"
+            case .liquify:    "Liquify"
+            case .halftone:   "Halftone"
+            case .motionBlur: "Motion"
+            case .thermal:    "Thermal"
             }
         }
 
         /// Whether the shader reads `time` and therefore needs a running clock.
         var isAnimated: Bool {
             switch self {
-            case .none, .bloom:        false
-            case .heat, .noise, .glitch: true
+            case .none, .bloom, .glass, .halftone, .motionBlur, .thermal: false
+            case .heat, .noise, .glitch, .chrome, .matrix, .liquify:      true
             }
         }
 
@@ -196,16 +208,42 @@ struct ShaderEffect: Codable, Hashable {
         /// room the text block is padded with, so the effect is not clipped.
         var sampleOffset: CGFloat {
             switch self {
-            case .none:   0
-            case .bloom:  60
-            case .heat:   60
-            case .noise:  0
-            case .glitch: 130
+            case .none:       0
+            case .bloom:      60
+            case .heat:       60
+            case .noise:      0
+            case .glitch:     130
+            case .chrome:     0
+            case .glass:      70
+            case .matrix:     0
+            case .liquify:    90
+            case .halftone:   0
+            case .motionBlur: 130
+            case .thermal:    0
             }
         }
     }
 
     static let none = ShaderEffect(kind: .none, intensity: 0)
+
+    var resolvedSecondary: Double { secondary ?? 0.5 }
+
+    /// Whether the second slider is meaningful for this kind.
+    var usesSecondary: Bool {
+        switch kind {
+        case .motionBlur, .matrix, .chrome: true
+        default: false
+        }
+    }
+
+    var secondaryLabel: String {
+        switch kind {
+        case .motionBlur: "Angle"
+        case .matrix:     "Speed"
+        case .chrome:     "Sheen"
+        default:          ""
+        }
+    }
 }
 
 // MARK: - Glyph

@@ -16,53 +16,72 @@ import UIKit
 import simd
 
 enum GlyphInteraction: String, CaseIterable, Identifiable {
-    case none, bloat, pucker, attract, drop
+    case none, warp, attract, gravity
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .none:    "Off"
-        case .bloat:   "Bloat"
-        case .pucker:  "Pucker"
+        case .warp:    "Warp"
         case .attract: "Attract"
-        case .drop:    "Drop"
+        case .gravity: "Gravity"
         }
     }
 
     var systemImage: String {
         switch self {
         case .none:    "hand.raised.slash"
-        case .bloat:   "arrow.up.left.and.arrow.down.right"
-        case .pucker:  "arrow.down.right.and.arrow.up.left"
+        case .warp:    "circle.circle"
         case .attract: "hurricane"
-        case .drop:    "arrow.down.to.line"
+        case .gravity: "arrow.up.arrow.down"
         }
     }
 
-    /// What the slider means for this mode.
     var amountLabel: String {
         switch self {
         case .none:    ""
-        case .bloat:   "Bloat"
-        case .pucker:  "Pucker"
-        case .attract: "Pull"       // 0 = zero gravity, letters just drift
-        case .drop:    "Gravity"
+        case .warp:    "Warp"      // negative puckers, positive bloats
+        case .attract: "Pull"      // 0 is zero gravity, letters drift
+        case .gravity: "Gravity"   // negative floats up, positive falls down
+        }
+    }
+
+    /// Bipolar controls sit at 0 and do nothing until moved either way.
+    var amountRange: ClosedRange<Double> {
+        switch self {
+        case .none:    0...0
+        case .warp:    -1...1
+        case .attract: 0...1
+        case .gravity: -1...1
         }
     }
 
     var defaultAmount: Double {
         switch self {
         case .none:    0
-        case .bloat:   0.5
-        case .pucker:  0.5
+        case .warp:    0
         case .attract: 0.45
-        case .drop:    0.5
+        case .gravity: 0
         }
     }
 
-    var usesTouchPoint: Bool {
-        self == .bloat || self == .pucker || self == .attract
+    /// Wording for the readout at either end of a bipolar slider.
+    func amountDetail(_ value: Double) -> String {
+        switch self {
+        case .warp:
+            if value > 0.02 { return "bloat \(Int(value * 100))%" }
+            if value < -0.02 { return "pucker \(Int(-value * 100))%" }
+            return "none"
+        case .gravity:
+            if value > 0.02 { return "fall \(Int(value * 100))%" }
+            if value < -0.02 { return "float \(Int(-value * 100))%" }
+            return "still"
+        case .attract:
+            return value < 0.04 ? "zero-g" : "\(Int(value * 100))%"
+        case .none:
+            return ""
+        }
     }
 }
 
@@ -72,7 +91,10 @@ final class GlyphScene: SKScene {
     var interaction: GlyphInteraction = .none
     /// Meaning depends on the mode: bloat/pucker size, attract pull (0 = zero-g),
     /// drop gravity.
-    var interactionAmount: Double = 0.5
+    var interactionAmount: Double = 0
+    /// When locked, releasing a touch does NOT spring the letters back, so a state can
+    /// be held still for a screenshot or an export.
+    var isLocked = false
 
     /// Called when the canvas is tapped with no interaction mode active, so the editor
     /// can move the insertion point. Carries the caret index the tap landed on.
@@ -196,6 +218,15 @@ final class GlyphScene: SKScene {
     }
 
     private func applyAppearance() {
+        // Background lives on its own node, so it has to be refreshed here too —
+        // otherwise a colour change only appeared the next time something forced a
+        // full rebuild.
+        backgroundNode.removeFromParent()
+        backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
+        backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        backgroundNode.zPosition = -10
+        addChild(backgroundNode)
+
         for glyph in composition.glyphs {
             guard let node = glyphNodes[glyph.id] else { continue }
             node.color = UIColor(glyph.color.color)
@@ -266,13 +297,13 @@ final class GlyphScene: SKScene {
         case .none:
             break
 
-        case .bloat, .pucker:
-            guard isHolding, let touch = touchPoint else { break }
+        case .warp:
+            guard isHolding, let touch = touchPoint, abs(interactionAmount) > 0.01 else { break }
             let reach = size.width * 0.38
-            // Bloat grows, pucker shrinks. Amount sets how far it goes.
-            let extent = interaction == .bloat
+            // One bipolar control: positive bloats, negative puckers, 0 does nothing.
+            let extent = interactionAmount >= 0
                 ? 1 + interactionAmount * 2.0
-                : 1 - interactionAmount * 0.75
+                : 1 + interactionAmount * 0.75
             for node in glyphNodes.values {
                 let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
                 let distance = hypot(centre.x - touch.x, centre.y - touch.y)
@@ -284,14 +315,12 @@ final class GlyphScene: SKScene {
 
         case .attract:
             guard isHolding, delta > 0 else { break }
-            // Amount 0 is zero gravity: the letters just drift. Higher values pull them
-            // toward wherever the finger is.
             let pull = CGFloat(interactionAmount) * size.width * 5.5
             let damping: CGFloat = 0.90
             let target = touchPoint ?? CGPoint(x: size.width / 2, y: size.height / 2)
 
             for (id, node) in glyphNodes {
-                var state = motion[id] ?? Motion(velocity: 0, spin: 0)
+                var state = motion[id] ?? Motion()
                 let seed = seedValue(for: id)
 
                 let centre = CGPoint(x: node.position.x + node.size.width / 2, y: node.position.y)
@@ -301,7 +330,6 @@ final class GlyphScene: SKScene {
                 dx /= distance
                 dy /= distance
 
-                // Weak wander so amount 0 still feels alive rather than frozen.
                 let wanderX = CGFloat(sin(elapsed * 1.3 + Double(seed) * 6.28)) * size.width * 0.10
                 let wanderY = CGFloat(cos(elapsed * 1.1 + Double(seed) * 6.28)) * size.height * 0.10
 
@@ -316,19 +344,30 @@ final class GlyphScene: SKScene {
                 motion[id] = state
             }
 
-        case .drop:
-            guard delta > 0 else { break }
-            let gravity = -size.height * (0.6 + CGFloat(interactionAmount) * 3.2)
+        case .gravity:
+            guard delta > 0, abs(interactionAmount) > 0.01 else { break }
+            // Positive falls, negative floats up, 0 leaves the letters alone.
+            let accel = -size.height * CGFloat(interactionAmount) * 3.2
             let bounce: CGFloat = 0.32
             for (id, node) in glyphNodes {
                 var state = motion[id] ?? Motion(velocity: 0, spin: (seedValue(for: id) - 0.5) * 3.2)
-                state.velocity += gravity * delta
+                state.velocity += accel * delta
                 node.position.y += state.velocity * delta
                 node.zRotation += state.spin * delta
 
                 let floor = node.size.height / 2
                 if node.position.y <= floor {
                     node.position.y = floor
+                    state.velocity = -state.velocity * bounce
+                    state.spin *= 0.45
+                    if abs(state.velocity) < size.height * 0.06 {
+                        state.velocity = 0
+                        state.spin = 0
+                    }
+                } else if node.position.y >= size.height - node.size.height / 2 {
+                    // Symmetric with the floor: letters settle against the ceiling
+                    // rather than wrapping around, which read as a glitch.
+                    node.position.y = size.height - node.size.height / 2
                     state.velocity = -state.velocity * bounce
                     state.spin *= 0.45
                     if abs(state.velocity) < size.height * 0.06 {
@@ -349,6 +388,81 @@ final class GlyphScene: SKScene {
         motion.removeAll()
         interactionStart = nil
         lastAdvance = nil
+    }
+
+    // MARK: - Test hooks
+
+    var currentComposition: Composition { composition }
+
+    var debugMeanGlyphY: CGFloat {
+        guard !glyphNodes.isEmpty else { return 0 }
+        return glyphNodes.values.reduce(0) { $0 + $1.position.y } / CGFloat(glyphNodes.count)
+    }
+
+    var debugMeanGlyphScale: CGFloat {
+        guard !glyphNodes.isEmpty else { return 1 }
+        return glyphNodes.values.reduce(0) { $0 + $1.xScale } / CGFloat(glyphNodes.count)
+    }
+
+    var debugHasSpringBackActions: Bool {
+        glyphNodes.values.contains { $0.hasActions() }
+    }
+
+    func simulateTouchDown(at point: CGPoint) {
+        touchPoint = point
+        touchDownPoint = point
+        isHolding = true
+        resetMotion()
+    }
+
+    func simulateTouchUp() {
+        isHolding = false
+        touchPoint = nil
+        touchDownPoint = nil
+        if !isLocked, interaction != .gravity { springBack() }
+    }
+
+    // MARK: - Touch recording (v6 video)
+    //
+    // Video records what you DO, not just what the shader does on its own. Rather than
+    // grabbing frames off the live view — which is pinned to the screen's scale and
+    // drops frames — the touches are recorded here and replayed offscreen at full
+    // resolution. Motion is deterministic given touch state, so the replay reproduces
+    // exactly what was on screen.
+
+    struct TouchSample: Hashable {
+        var time: TimeInterval
+        var point: CGPoint?
+        var holding: Bool
+    }
+
+    private(set) var touchTrack: [TouchSample] = []
+    private var touchRecordingStart: TimeInterval?
+
+    func beginTouchRecording() {
+        touchTrack = [TouchSample(time: 0, point: nil, holding: false)]
+        touchRecordingStart = lastAdvance ?? 0
+    }
+
+    func endTouchRecording() -> [TouchSample] {
+        touchRecordingStart = nil
+        return touchTrack
+    }
+
+    private func recordTouch() {
+        guard let start = touchRecordingStart, let last = lastAdvance else { return }
+        touchTrack.append(
+            TouchSample(time: last - start, point: touchPoint, holding: isHolding)
+        )
+    }
+
+    /// Replay: drive the scene from a recorded track instead of live touches.
+    func applyRecordedTouch(track: [TouchSample], at time: TimeInterval) {
+        guard !track.isEmpty else { return }
+        var chosen = track[0]
+        for sample in track where sample.time <= time { chosen = sample }
+        touchPoint = chosen.point
+        isHolding = chosen.holding
     }
 
     // MARK: - Caret
@@ -444,10 +558,12 @@ final class GlyphScene: SKScene {
         touchDownPoint = point
         isHolding = true
         resetMotion()
+        recordTouch()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         touchPoint = touches.first?.location(in: self)
+        recordTouch()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -460,6 +576,7 @@ final class GlyphScene: SKScene {
         isHolding = false
         touchPoint = nil
         touchDownPoint = nil
+        recordTouch()
 
         if interaction == .none {
             // A tap with no mode active moves the insertion point.
@@ -468,7 +585,8 @@ final class GlyphScene: SKScene {
             }
             return
         }
-        if interaction != .drop { springBack() }
+        // Locked keeps whatever the letters are doing; unlocked settles them back.
+        if !isLocked, interaction != .gravity { springBack() }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {

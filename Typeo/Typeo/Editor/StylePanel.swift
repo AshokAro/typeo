@@ -15,6 +15,38 @@ struct StylePanel: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Presets") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(StylePreset.all) { preset in
+                                Button {
+                                    store.apply(preset)
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 9)
+                                                .fill(preset.previewBackground)
+                                            Text(verbatim: "Aa")
+                                                .font(preset.font.font(size: 20))
+                                                .foregroundStyle(preset.previewGradient)
+                                        }
+                                        .frame(width: 56, height: 44)
+                                        .overlay(RoundedRectangle(cornerRadius: 9)
+                                            .stroke(Color.primary.opacity(0.15), lineWidth: 1))
+
+                                        Text(preset.name)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 0))
+                }
+
                 Section("Text") {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -66,6 +98,23 @@ struct StylePanel: View {
                     Picker("Effect", selection: effectKindBinding) {
                         ForEach(ShaderEffect.Kind.allCases) { kind in
                             Text(kind.label).tag(kind)
+                        }
+                    }
+
+                    if store.composition.globalShader.usesSecondary {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(store.composition.globalShader.secondaryLabel)
+                                Spacer()
+                                Text(store.composition.globalShader.resolvedSecondary,
+                                     format: .percent.precision(.fractionLength(0)))
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(value: Binding(
+                                get: { store.composition.globalShader.resolvedSecondary },
+                                set: { store.setEffectSecondary($0) }
+                            ), in: 0...1)
                         }
                     }
 

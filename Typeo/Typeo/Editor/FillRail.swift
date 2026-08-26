@@ -63,6 +63,8 @@ enum FillPreview {
 struct FillChip: View {
     let paint: FillPreview
     var isSelected: Bool = false
+    /// Text fills carry an A so the two chips are not two identical blobs.
+    var glyph: String?
 
     var body: some View {
         ZStack {
@@ -72,12 +74,28 @@ struct FillChip: View {
             case let .gradient(gradient):
                 Circle().fill(gradient.linearGradient)
             }
+
+            if let glyph {
+                Text(verbatim: glyph)
+                    .font(.system(size: 15, weight: .bold, design: .serif))
+                    .foregroundStyle(contrasting)
+            }
         }
         .frame(width: 30, height: 30)
         .overlay(
             Circle().stroke(isSelected ? Color.white : Color.white.opacity(0.35),
                             lineWidth: isSelected ? 2.5 : 1)
         )
+    }
+
+    /// Black on light fills, white on dark ones, so the A never disappears.
+    private var contrasting: Color {
+        let rgba: RGBAColor = switch paint {
+        case let .solid(colour): colour
+        case let .gradient(gradient): gradient.start
+        }
+        let luminance = 0.299 * rgba.red + 0.587 * rgba.green + 0.114 * rgba.blue
+        return luminance > 0.55 ? .black : .white
     }
 }
 

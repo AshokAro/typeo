@@ -44,6 +44,8 @@ enum VideoExporter {
     static func export(
         composition: Composition,
         interaction: GlyphInteraction,
+        interactionAmount: Double = 0,
+        touchTrack: [GlyphScene.TouchSample] = [],
         settings: VideoExportSettings = VideoExportSettings(),
         progress: @MainActor (Double) -> Void = { _ in }
     ) async throws -> URL {
@@ -51,6 +53,8 @@ enum VideoExporter {
         guard let frames = CompositionFrameRenderer(
             composition: composition,
             interaction: interaction,
+            interactionAmount: interactionAmount,
+            touchTrack: touchTrack,
             scale: settings.scale
         ) else {
             throw VideoExportError.rendererUnavailable

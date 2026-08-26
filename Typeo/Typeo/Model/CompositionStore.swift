@@ -306,6 +306,11 @@ final class CompositionStore {
         }
     }
 
+    func setEffectSecondary(_ value: Double) {
+        checkpoint("effect", coalesceFor: 0.8)
+        composition.globalShader.secondary = value
+    }
+
     func setEffectIntensity(_ intensity: Double) {
         composition.globalShader.intensity = intensity
     }
@@ -313,6 +318,19 @@ final class CompositionStore {
     func setBackground(_ background: Background) {
         checkpoint("background", coalesceFor: 0.8)
         composition.background = background
+    }
+
+    func apply(_ preset: StylePreset) {
+        checkpoint("preset")
+        style.font = preset.font
+        style.color = preset.color
+        mutateAllGlyphs { glyph in
+            glyph.font = preset.font
+            glyph.color = preset.color
+        }
+        composition.textGradient = preset.textGradient
+        composition.background = preset.background
+        composition.globalShader = preset.shader
     }
 
     // MARK: Fills

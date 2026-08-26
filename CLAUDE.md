@@ -155,6 +155,30 @@ only what happens in between.
   reason as textGradient; `resolved*` accessors supply the pre-v6 defaults, and there
   is a test asserting an old file renders byte-identically.
 
+## v6 Stage C notes
+
+- **SKShader failures are SILENT.** A shader that does not compile is simply not
+  applied and SpriteKit says nothing. Worse, setting any shader flips
+  `shouldEnableEffects`, which changes rasterisation by a pixel or two — so "output
+  differs from baseline" is NOT proof a shader ran. Verify by mean ink colour or by
+  geometry change.
+- What broke them: an early `return` inside `main()`, and an extra helper function
+  beyond the shared noise ones. Write shaders with no early return, no if/else-if
+  chains (use `mix`/`smoothstep`), and only the shared helpers.
+- Colour is premultiplied. Divide by alpha to read true RGB, multiply back on output,
+  and never modify alpha or the glyph edges fringe.
+- Interaction modes are now none / warp / attract / gravity. Warp and gravity are
+  BIPOLAR: 0 does nothing, negative puckers / floats up, positive bloats / falls down.
+- The gravity ceiling mirrors the floor. Wrapping letters around to the bottom read as
+  a glitch.
+- `isLocked` on the scene suppresses spring-back on release, so a state can be held for
+  a screenshot or an export.
+- Background lives on its own node, so `applyAppearance` must rebuild it. Previously a
+  background colour change only appeared once something else forced a full rebuild.
+- Video records TOUCHES and replays them offscreen rather than capturing the live view.
+  Capturing the view is pinned to the screen's scale and drops frames; replay is
+  deterministic because motion is integrated in `advance(to:)`.
+
 ## v5 widget notes
 
 - `TypeoSharedStore` is THE SEAM. It returns the App Group container when the

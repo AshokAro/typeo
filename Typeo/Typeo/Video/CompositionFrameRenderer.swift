@@ -30,7 +30,16 @@ final class CompositionFrameRenderer {
     private let pool: CVPixelBufferPool
     private let textureCache: CVMetalTextureCache
 
-    init?(composition: Composition, interaction: GlyphInteraction, scale: CGFloat) {
+    private let touchTrack: [GlyphScene.TouchSample]
+
+    init?(
+        composition: Composition,
+        interaction: GlyphInteraction,
+        interactionAmount: Double = 0,
+        touchTrack: [GlyphScene.TouchSample] = [],
+        scale: CGFloat
+    ) {
+        self.touchTrack = touchTrack
         let reference = composition.aspectRatio.referenceSize
         // H.264 wants even dimensions.
         let width = Int((reference.width * scale / 2).rounded()) * 2
@@ -63,8 +72,13 @@ final class CompositionFrameRenderer {
 
         let scene = GlyphScene(composition: composition, size: reference)
         scene.interaction = interaction
+        scene.interactionAmount = interactionAmount
         scene.rebuild()
-        scene.beginAutomaticInteraction()
+        // With a recorded track the touches drive it; without one, start the mode
+        // automatically so an unattended recording still shows something.
+        if touchTrack.isEmpty {
+            scene.beginAutomaticInteraction()
+        }
         self.scene = scene
 
         let renderer = SKRenderer(device: device)
@@ -97,6 +111,9 @@ final class CompositionFrameRenderer {
 
         // SKRenderer.update advances the shader clock but does NOT reliably step the
         // scene, so motion is advanced explicitly. Same call the live canvas makes.
+        if !touchTrack.isEmpty {
+            scene.applyRecordedTouch(track: touchTrack, at: time)
+        }
         scene.advance(to: time)
         renderer.update(atTime: time)
 
