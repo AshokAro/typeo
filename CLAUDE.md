@@ -6,7 +6,9 @@ types text, picks a font, styles it, and exports an image to Photos / the share 
 30-day learning project, versioned deliberately so later versions are additive, not rewrites.
 
 Xcode project lives at `Typeo/Typeo.xcodeproj`. Repo root is `~/Documents/Typeo`.
-Minimum deployment target: iOS 17 (required for SwiftUI `.layerEffect` Metal shaders).
+Minimum deployment target: **iOS 26.0** (required for Liquid Glass: `.glassEffect`,
+`GlassEffectContainer`, `.buttonStyle(.glass)`). `.layerEffect` Metal shaders are iOS 17+
+and remain available, so the v2 shader plan is unaffected.
 
 ## THE ONE ARCHITECTURAL RULE — do not violate
 
@@ -67,6 +69,15 @@ only what happens in between.
 
 ## Conventions
 - SwiftUI only for UI. No third-party dependencies unless explicitly agreed.
+- **Liquid Glass is chrome only.** `.glassEffect`, `.buttonStyle(.glass)` and friends belong
+  on control panels, buttons and toolbars — NEVER on the canvas. The canvas is content and
+  gets exported; glass is UI and never does. Keep that boundary hard: it is what keeps the
+  export path clean from v1 through v4.
+- The canvas lays out at a fixed reference size per aspect ratio (1080x1080, 1080x1920,
+  1920x1080) and is scaled down for on-screen display. Preview and export therefore run the
+  SAME view at the SAME logical size — WYSIWYG is structural, not maintained by hand.
+- Any Core Image / shader effect is applied to the rendered canvas image, by the same
+  renderer the export uses. Never approximate the effect live and filter only on export.
 - Export renders via `ImageRenderer` (SwiftUI) at the target aspect ratio and scale.
 - Photos save requires `NSPhotoLibraryAddUsageDescription` in Info.plist.
 - Bundled fonts must be OFL/licence-checked and declared in Info.plist under
