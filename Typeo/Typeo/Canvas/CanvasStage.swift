@@ -36,7 +36,8 @@ struct CanvasStage: View {
             options: [.ignoresSiblingOrder]
         )
         .frame(width: displaySize.width, height: displaySize.height)
-        .clipShape(.rect(cornerRadius: 4))
+        // iOS continuous curvature (squircle), not a plain circular corner.
+        .clipShape(.rect(cornerRadius: 28, style: .continuous))
         .onAppear {
             scene.interaction = interaction
             scene.update(composition: composition)

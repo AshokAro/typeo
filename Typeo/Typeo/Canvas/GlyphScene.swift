@@ -46,7 +46,8 @@ final class GlyphScene: SKScene {
 
     private var glyphNodes: [UUID: SKSpriteNode] = [:]
     private var restPositions: [UUID: CGPoint] = [:]
-    private var effectNode = SKEffectNode()
+    private var effectNode = SKEffectNode()   // outer: the FX shader
+    private var fillNode = SKEffectNode()     // inner: the text gradient fill
     private var backgroundNode = SKSpriteNode()
     private var touchPoint: CGPoint?
     private var isHolding = false
@@ -107,6 +108,12 @@ final class GlyphScene: SKScene {
         bleed.alpha = 0.001
         effectNode.addChild(bleed)
 
+        // One SKEffectNode cannot stack two shaders, so the gradient fill gets its own
+        // node INSIDE the FX node: fill is applied to the glyphs, then FX runs over it.
+        fillNode = SKEffectNode()
+        fillNode.shouldRasterize = false
+        effectNode.addChild(fillNode)
+
         let metrics = composition.glyphs.map { GlyphTextureFactory.metric(for: $0) }
         let dominant = composition.dominantSize
         let layout = GlyphLayoutEngine.layout(
@@ -142,7 +149,7 @@ final class GlyphScene: SKScene {
             node.zRotation = -glyph.rotation * .pi / 180
 
             glyphNodes[glyph.id] = node
-            effectNode.addChild(node)
+            fillNode.addChild(node)
         }
 
         applyShader()
@@ -158,7 +165,18 @@ final class GlyphScene: SKScene {
         applyShader()
     }
 
+    private func applyFill() {
+        guard let gradient = composition.textGradient else {
+            fillNode.shader = nil
+            fillNode.shouldEnableEffects = false
+            return
+        }
+        fillNode.shader = SpriteShaders.gradientFillShader(gradient)
+        fillNode.shouldEnableEffects = true
+    }
+
     private func applyShader() {
+        applyFill()
         guard let shader = SpriteShaders.shader(for: composition.globalShader) else {
             effectNode.shader = nil
             effectNode.shouldEnableEffects = false
@@ -362,7 +380,14 @@ enum BackgroundTextureFactory {
                                     y: size.height * (0.5 - 0.5 * sin(radians)))
                 let end = CGPoint(x: size.width * (0.5 + 0.5 * cos(radians)),
                                   y: size.height * (0.5 + 0.5 * sin(radians)))
-                context.cgContext.drawLinearGradient(gradient, start: start, end: end, options: [])
+                // Without these, anything outside the start/end band is left unpainted
+                // and the canvas corners come out black at any oblique angle.
+                context.cgContext.drawLinearGradient(
+                    gradient,
+                    start: start,
+                    end: end,
+                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+                )
             }
             return SKSpriteNode(texture: SKTexture(image: image), size: size)
         }

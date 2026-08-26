@@ -116,6 +116,28 @@ only what happens in between.
   update and the offscreen frame renderer. Do not reintroduce `SKPhysicsBody` for
   anything that has to appear in an export.
 
+## v6 UI notes
+
+- The canvas uses `.rect(cornerRadius: 28, style: .continuous)` — the iOS squircle.
+  Rounding is CHROME ONLY: the exported PNG stays square-edged, or shares would carry
+  transparent corners.
+- Adding a NON-OPTIONAL field to `Composition` breaks every saved file: Swift's
+  synthesized decode uses `decode(_:forKey:)` with no default fallback. New fields must
+  be Optional (which decodes via `decodeIfPresent`) or ship a custom `init(from:)`.
+  `textGradient` is Optional for exactly this reason, and there is a regression test
+  that decodes a hand-written pre-v6 JSON.
+- One `SKEffectNode` cannot stack two shaders. The text gradient runs on an INNER
+  effect node holding the glyphs; the FX shader runs on the OUTER one.
+- `textGradient` set means the gradient spans the block and overrides per-glyph
+  colours; nil means each glyph uses its own colour, so v3's per-letter colour
+  divergence still works.
+- `CGContext.drawLinearGradient` must be given `.drawsBeforeStartLocation` and
+  `.drawsAfterEndLocation`, or an oblique angle leaves the canvas corners unpainted.
+- Colour editing lives in a right-edge rail (`FillRail`), not a sheet — a sheet covered
+  the canvas so you could not see what you were changing.
+- Don't wrap a fixed-size glass control in `GlassEffectContainer`; it is for morphing
+  between glass shapes and sized the rail's capsule to the wrong bounds.
+
 ## v5 widget notes
 
 - `TypeoSharedStore` is THE SEAM. It returns the App Group container when the

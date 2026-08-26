@@ -73,6 +73,36 @@ struct RGBAColor: Codable, Hashable {
     static let ink   = RGBAColor(red: 0.09, green: 0.10, blue: 0.09)
 }
 
+// MARK: - Gradient
+
+/// A linear gradient. Used for the text fill; `Background` carries its own case.
+struct GradientPaint: Codable, Hashable {
+    var colors: [RGBAColor]
+    var angleDegrees: Double
+
+    init(colors: [RGBAColor], angleDegrees: Double = 90) {
+        self.colors = colors
+        self.angleDegrees = angleDegrees
+    }
+
+    var start: RGBAColor { colors.first ?? .white }
+    var end: RGBAColor { colors.last ?? .white }
+
+    static let sunset = GradientPaint(
+        colors: [RGBAColor(red: 1, green: 0.35, blue: 0.25), RGBAColor(red: 0.55, green: 0.15, blue: 0.75)]
+    )
+    static let ice = GradientPaint(
+        colors: [RGBAColor(red: 0.55, green: 0.95, blue: 1), RGBAColor(red: 0.25, green: 0.35, blue: 0.95)]
+    )
+    static let lime = GradientPaint(
+        colors: [RGBAColor(red: 0.85, green: 1, blue: 0.3), RGBAColor(red: 0.1, green: 0.75, blue: 0.45)]
+    )
+    static let ember = GradientPaint(
+        colors: [RGBAColor(red: 1, green: 0.85, blue: 0.3), RGBAColor(red: 0.9, green: 0.15, blue: 0.1)]
+    )
+    static let presets: [GradientPaint] = [.sunset, .ice, .lime, .ember]
+}
+
 // MARK: - Background
 
 enum Background: Codable, Hashable {
@@ -216,6 +246,11 @@ struct Composition: Identifiable, Codable, Hashable {
     var background: Background = .defaultBackground
     var globalShader: ShaderEffect = .none
     var glyphs: [Glyph] = []
+    /// v6, ADDITIVE and optional so compositions saved before it still decode.
+    /// When set, the text is filled with this gradient across the whole block and
+    /// per-glyph colours are ignored. When nil, each glyph uses its own colour, so
+    /// v3's per-letter colour divergence still works.
+    var textGradient: GradientPaint?
 
     init(
         id: UUID = UUID(),
@@ -223,7 +258,8 @@ struct Composition: Identifiable, Codable, Hashable {
         aspectRatio: AspectRatio = .square,
         background: Background = .defaultBackground,
         globalShader: ShaderEffect = .none,
-        glyphs: [Glyph] = []
+        glyphs: [Glyph] = [],
+        textGradient: GradientPaint? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -231,6 +267,7 @@ struct Composition: Identifiable, Codable, Hashable {
         self.background = background
         self.globalShader = globalShader
         self.glyphs = glyphs
+        self.textGradient = textGradient
     }
 
     var text: String { glyphs.map(\.character).joined() }

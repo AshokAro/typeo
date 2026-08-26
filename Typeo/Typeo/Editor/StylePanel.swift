@@ -16,8 +16,6 @@ struct StylePanel: View {
         NavigationStack {
             Form {
                 Section("Text") {
-                    ColorPicker("Colour", selection: store.colorBinding, supportsOpacity: false)
-
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Size")
@@ -28,10 +26,6 @@ struct StylePanel: View {
                         }
                         Slider(value: store.sizeBinding, in: 40...420, step: 2)
                     }
-                }
-
-                Section("Background") {
-                    ColorPicker("Colour", selection: store.backgroundColorBinding, supportsOpacity: false)
                 }
 
                 Section("Effect") {

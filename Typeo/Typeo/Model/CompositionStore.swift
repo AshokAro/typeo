@@ -29,6 +29,57 @@ final class CompositionStore {
         self.style = style
     }
 
+    // MARK: Undo / redo
+    //
+    // Snapshots whole Compositions. The model is a value type and small, so this is
+    // simpler and far less bug-prone than recording inverse operations.
+
+    private var undoStack: [Composition] = []
+    private var redoStack: [Composition] = []
+    private var lastCheckpoint: (kind: String, at: Date)?
+    private let undoLimit = 60
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    /// Records a restore point. Repeated checkpoints of the same `kind` inside
+    /// `coalesceFor` collapse into one, so typing does not fill the stack per keystroke.
+    func checkpoint(_ kind: String, coalesceFor window: TimeInterval = 0) {
+        if window > 0,
+           let last = lastCheckpoint,
+           last.kind == kind,
+           Date().timeIntervalSince(last.at) < window {
+            lastCheckpoint = (kind, Date())
+            return
+        }
+        undoStack.append(composition)
+        if undoStack.count > undoLimit { undoStack.removeFirst() }
+        redoStack.removeAll()
+        lastCheckpoint = (kind, Date())
+    }
+
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(composition)
+        composition = previous
+        syncStyleFromComposition()
+        lastCheckpoint = nil
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(composition)
+        composition = next
+        syncStyleFromComposition()
+        lastCheckpoint = nil
+    }
+
+    private func syncStyleFromComposition() {
+        if let first = composition.glyphs.first {
+            style = GlyphStyle(font: first.font, size: first.size, color: first.color)
+        }
+    }
+
     // MARK: Text
 
     var text: String {
@@ -41,6 +92,7 @@ final class CompositionStore {
     /// one style so this is invisible — in v3 it is what stops editing from wiping
     /// per-letter work.
     func setText(_ newText: String) {
+        checkpoint("text", coalesceFor: 1.2)
         let characters = Array(newText)
         var next: [Glyph] = []
         next.reserveCapacity(characters.count)
@@ -73,16 +125,19 @@ final class CompositionStore {
     }
 
     func setFont(_ font: GlyphFont) {
+        checkpoint("font")
         style.font = font
         mutateAllGlyphs { $0.font = font }
     }
 
     func setSize(_ size: CGFloat) {
+        checkpoint("size", coalesceFor: 0.8)
         style.size = size
         mutateAllGlyphs { $0.size = size }
     }
 
     func setColor(_ color: RGBAColor) {
+        checkpoint("colour", coalesceFor: 0.8)
         style.color = color
         mutateAllGlyphs { $0.color = color }
     }
@@ -128,6 +183,7 @@ final class CompositionStore {
     }
 
     func jumble(_ options: JumbleOptions = JumbleOptions()) {
+        checkpoint("jumble")
         for index in composition.glyphs.indices where composition.glyphs[index].role == .glyph {
             if options.fonts, let option = FontCatalog.all.randomElement() {
                 composition.glyphs[index].font = option.glyphFont
@@ -149,6 +205,7 @@ final class CompositionStore {
 
     /// Puts every glyph back on the single shared style and clears any displacement.
     func unjumble() {
+        checkpoint("unjumble")
         mutateAllGlyphs { glyph in
             glyph.font = style.font
             glyph.size = style.size
@@ -184,7 +241,32 @@ final class CompositionStore {
     }
 
     func setBackground(_ background: Background) {
+        checkpoint("background", coalesceFor: 0.8)
         composition.background = background
+    }
+
+    // MARK: Fills
+
+    func setTextGradient(_ gradient: GradientPaint?) {
+        checkpoint("textFill", coalesceFor: 0.8)
+        composition.textGradient = gradient
+    }
+
+    var textGradient: GradientPaint? { composition.textGradient }
+
+    var backgroundGradient: GradientPaint? {
+        if case let .linearGradient(colors, angle) = composition.background {
+            return GradientPaint(colors: colors, angleDegrees: angle)
+        }
+        return nil
+    }
+
+    func setBackgroundGradient(_ gradient: GradientPaint?) {
+        if let gradient {
+            setBackground(.linearGradient(colors: gradient.colors, angleDegrees: gradient.angleDegrees))
+        } else {
+            setBackground(.solid(RGBAColor(backgroundColorBinding.wrappedValue)))
+        }
     }
 
     // MARK: Bindings for SwiftUI controls

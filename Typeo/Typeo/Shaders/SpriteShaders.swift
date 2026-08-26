@@ -35,6 +35,35 @@ enum SpriteShaders {
         return shader
     }
 
+    /// Fills whatever the inner effect node rasterised with a linear gradient,
+    /// keeping the original alpha. Runs on a SEPARATE, inner SKEffectNode: one node
+    /// cannot stack two shaders, so fill is inner and FX is outer.
+    static func gradientFillShader(_ gradient: GradientPaint) -> SKShader {
+        let shader = SKShader(source: gradientFill)
+        let start = gradient.start
+        let end = gradient.end
+        let radians = Float(gradient.angleDegrees * .pi / 180)
+        shader.uniforms = [
+            SKUniform(name: "u_from", vectorFloat4: vector_float4(
+                Float(start.red), Float(start.green), Float(start.blue), Float(start.opacity))),
+            SKUniform(name: "u_to", vectorFloat4: vector_float4(
+                Float(end.red), Float(end.green), Float(end.blue), Float(end.opacity))),
+            SKUniform(name: "u_dir", vectorFloat2: vector_float2(cos(radians), sin(radians))),
+        ]
+        return shader
+    }
+
+    static let gradientFill = """
+    void main() {
+        vec4 source = texture2D(u_texture, v_tex_coord);
+        vec2 centred = v_tex_coord - vec2(0.5);
+        float t = clamp(dot(centred, u_dir) + 0.5, 0.0, 1.0);
+        vec4 tint = mix(u_from, u_to, t);
+        // Premultiplied: keep the glyph's alpha, replace the colour.
+        gl_FragColor = vec4(tint.rgb * source.a * tint.a, source.a * tint.a);
+    }
+    """
+
     /// Shared noise helpers, prepended to every shader.
     private static let helpers = """
     float hash21(vec2 p) {

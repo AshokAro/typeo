@@ -21,6 +21,7 @@ struct EditorView: View {
     @State private var didSave = false
     @State private var interaction: GlyphInteraction = .none
     @State private var isRecordingSheetUp = false
+    @State private var activeFill: FillTarget?
     @State private var scene = GlyphScene(
         composition: Composition(),
         size: AspectRatio.square.referenceSize
@@ -45,10 +46,27 @@ struct EditorView: View {
                     if store.composition.isEmpty {
                         emptyHint
                     }
+
+                    HStack(alignment: .top, spacing: 8) {
+                        Spacer(minLength: 0)
+                        if let activeFill {
+                            FillEditor(store: store, target: activeFill)
+                                .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
+                        FillRail(store: store, active: $activeFill)
+                    }
+                    .padding(.trailing, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(.rect)
-                .onTapGesture { if store.composition.isEmpty { isTyping = true } }
+                .onTapGesture {
+                    if activeFill != nil {
+                        withAnimation(.snappy(duration: 0.22)) { activeFill = nil }
+                    } else if store.composition.isEmpty {
+                        isTyping = true
+                    }
+                }
             }
 
             if !store.composition.isEmpty {
@@ -76,48 +94,87 @@ struct EditorView: View {
     // MARK: Chrome
 
     private var topBar: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(AspectRatio.allCases) { ratio in
-                    AspectButton(ratio: ratio, isSelected: store.composition.aspectRatio == ratio) {
-                        store.setAspectRatio(ratio)
+        HStack(spacing: 8) {
+            // Scrolls, so adding modes later never squeezes the labels again.
+            ScrollView(.horizontal, showsIndicators: false) {
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ForEach(AspectRatio.allCases) { ratio in
+                            AspectButton(ratio: ratio, isSelected: store.composition.aspectRatio == ratio) {
+                                store.setAspectRatio(ratio)
+                            }
+                        }
+
+                        Button { store.undo() } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 14, weight: .semibold))
+                                .frame(width: 30, height: 26)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(!store.canUndo)
+                        .accessibilityLabel("Undo")
+
+                        Button { store.redo() } label: {
+                            Image(systemName: "arrow.uturn.forward")
+                                .font(.system(size: 14, weight: .semibold))
+                                .frame(width: 30, height: 26)
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(!store.canRedo)
+                        .accessibilityLabel("Redo")
                     }
+                    .padding(.trailing, 8)
                 }
+            }
+            .scrollClipDisabled(false)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.92),
+                        .init(color: .black.opacity(0), location: 1),
+                    ],
+                    startPoint: .leading, endPoint: .trailing
+                )
+            )
 
-                Spacer(minLength: 6)
+            // Pinned: must never scroll out of reach.
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    Button { store.newComposition() } label: {
+                        Image(systemName: "plus").font(.system(size: 15, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.glass)
+                    .accessibilityLabel("New composition")
 
-                Button { store.newComposition() } label: {
-                    Image(systemName: "plus").font(.system(size: 15, weight: .semibold))
-                        .frame(width: 26, height: 26)
+                    Button { saveToLibrary() } label: {
+                        Image(systemName: didSave ? "checkmark" : "square.and.arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.glass)
+                    .disabled(store.composition.isEmpty)
+                    .accessibilityLabel("Save to gallery")
+
+                    Button { prepareExport() } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(store.composition.isEmpty)
+                    .accessibilityLabel("Export")
                 }
-                .buttonStyle(.glass)
-                .accessibilityLabel("New composition")
-
-                Button { saveToLibrary() } label: {
-                    Image(systemName: didSave ? "checkmark" : "square.and.arrow.down")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.glass)
-                .disabled(store.composition.isEmpty)
-                .accessibilityLabel("Save to gallery")
-
-                Button { prepareExport() } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(store.composition.isEmpty)
-                .accessibilityLabel("Export")
             }
         }
     }
 
     /// v3. Everything on this row writes DIFFERENT values to individual glyphs.
     private var perLetterBar: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
                 ForEach(GlyphInteraction.allCases) { mode in
                     InteractionButton(mode: mode, isSelected: interaction == mode) {
                         interaction = mode
@@ -125,7 +182,7 @@ struct EditorView: View {
                     }
                 }
 
-                Spacer(minLength: 4)
+                Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
 
                 Button {
                     captureSceneTransforms()
@@ -155,6 +212,8 @@ struct EditorView: View {
                 .buttonStyle(.glass)
                 .disabled(!store.isJumbled)
                 .accessibilityLabel("Reset letters")
+                }
+                .padding(.trailing, 4)
             }
         }
     }
