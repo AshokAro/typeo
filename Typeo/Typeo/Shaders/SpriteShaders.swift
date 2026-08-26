@@ -46,10 +46,18 @@ enum SpriteShaders {
             SKUniform(name: "u_tertiary", float: Float(effect.resolvedTertiary)),
             SKUniform(name: "u_variant", float: Float(effect.resolvedVariant)),
             SKUniform(name: "u_texel", vectorFloat2: vector_float2(0.001, 0.001)),
+            // Which way the phone is leaning. Zero unless Tilt is running, so every
+            // shader that reads it is still still when the mode is off.
+            SKUniform(name: "u_tilt", vectorFloat2: vector_float2(0, 0)),
         ]
         // The rain needs real characters, and a fragment shader cannot draw type.
         if effect.kind == .matrix {
             shader.addUniform(SKUniform(name: "u_glyphs", texture: MatrixGlyphAtlas.texture))
+        }
+        // Glass samples the background, so it needs to know how far the background has
+        // been slid by the parallax.
+        if effect.kind == .glass {
+            shader.addUniform(SKUniform(name: "u_bg_shift", vectorFloat2: vector_float2(0, 0)))
         }
         return shader
     }
@@ -316,10 +324,13 @@ extension SpriteShaders {
         // still image instead of a slow crawl.
         float t = (u_time + u_time_offset) * 0.22 * u_secondary;
 
-        vec2 q = vec2(valueNoise(uv * 3.0 + t), valueNoise(uv * 3.0 + 5.2 - t));
-        vec2 r = vec2(valueNoise(uv * 3.0 + 4.0 * q + t * 0.7),
-                      valueNoise(uv * 3.0 + 4.0 * q + 9.2 - t * 0.6));
-        float flow = valueNoise(uv * 4.0 + 4.0 * r);
+        // Leaning the phone slides the field, so the metal catches the light like a
+        // real poured surface rather than a printed texture.
+        vec2 lean = uv + u_tilt * 0.09;
+        vec2 q = vec2(valueNoise(lean * 3.0 + t), valueNoise(lean * 3.0 + 5.2 - t));
+        vec2 r = vec2(valueNoise(lean * 3.0 + 4.0 * q + t * 0.7),
+                      valueNoise(lean * 3.0 + 4.0 * q + 9.2 - t * 0.6));
+        float flow = valueNoise(lean * 4.0 + 4.0 * r);
 
         float band = fract(flow * 3.0);
         float sheen = smoothstep(0.40, 0.50, band) * smoothstep(0.60, 0.50, band);
@@ -368,8 +379,11 @@ extension SpriteShaders {
                    + texture2D(u_texture, uv - vec2(0.0, 9.0) * u_texel).a;
         float interior = smoothstep(1.6, 3.9, wide);
 
+        // The background has been slid by the parallax; sample where it actually is,
+        // or the letters refract a background that is no longer behind them.
+        vec2 source = uv - u_bg_shift;
         vec2 bend = gradient * (120.0 + 420.0 * u_amount) * u_texel;
-        vec2 lens = clamp(uv - bend, 0.0, 1.0);
+        vec2 lens = clamp(source - bend, 0.0, 1.0);
 
         // Frost: a few taps of the background, which is what gives glass its milkiness
         // instead of a plain see-through hole.
@@ -381,7 +395,7 @@ extension SpriteShaders {
         frost *= 0.2;
 
         // A touch of chromatic separation, strongest where the lens bends hardest.
-        float red = texture2D(u_background, clamp(uv - bend * 1.22, 0.0, 1.0)).r;
+        float red = texture2D(u_background, clamp(source - bend * 1.22, 0.0, 1.0)).r;
         vec3 behind = texture2D(u_background, lens).rgb;
         vec3 refracted = mix(vec3(red, behind.g, behind.b), frost, u_secondary);
 
@@ -390,8 +404,10 @@ extension SpriteShaders {
         body *= 1.0 + 0.22 * interior * u_amount;
 
         // Bevel lighting from the top left, with a contact shadow opposite it. This is
-        // what makes the shape read as a solid object rather than a tinted hole.
-        vec2 key = vec2(-0.55, 0.835);
+        // what makes the shape read as a solid object rather than a tinted hole. The
+        // key swings with the phone, which is what real glass does under a real light.
+        vec2 keyRaw = vec2(-0.55, 0.835) + u_tilt * 0.9;
+        vec2 key = keyRaw / max(length(keyRaw), 0.001);
         float lit = max(0.0, dot(normal, key));
         float shade = max(0.0, dot(normal, -key));
         body += vec3(1.0) * pow(lit, 2.0) * edge * (0.45 + 0.75 * u_amount);

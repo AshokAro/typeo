@@ -12,7 +12,15 @@ import UIKit
 
 @MainActor
 enum CompositionRenderer {
-    static func render(_ composition: Composition, time: Double = 0, scale: CGFloat = 2) -> UIImage? {
-        SpriteCompositionRenderer.render(composition, time: time, scale: scale)
+    /// - Parameter tilt: the device lean the canvas is currently showing. Passed in so
+    ///   an export carries the background parallax and the swung light that were on
+    ///   screen — rendering at zero would quietly differ from the preview.
+    static func render(
+        _ composition: Composition,
+        time: Double = 0,
+        scale: CGFloat = 2,
+        tilt: CGVector = .zero
+    ) -> UIImage? {
+        SpriteCompositionRenderer.render(composition, time: time, scale: scale, tilt: tilt)
     }
 }

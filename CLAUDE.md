@@ -205,7 +205,8 @@ only what happens in between.
 ## v6 interaction rules (current)
 
 - EVERY interaction slider is bipolar, -1...1, and rests at 0 doing nothing:
-  warp = pucker/bloat, attract = push/pull, gravity = float up/fall down.
+  warp = pucker/bloat, attract = push/pull, gravity = float up/fall down,
+  tilt = uphill/downhill.
   Shuffle stays 0...1 because a negative percentage is meaningless.
 - Shuffle has TWO axes. Tapping it TILTS every letter slightly and the slider says how
   many additionally get a new TYPEFACE and a small size change — so a shuffle at 0
@@ -379,3 +380,39 @@ xcodebuild -project Typeo/Typeo.xcodeproj \
   nothing observed it. Setting state that no `.sheet` is bound to fails silently.
 - `ColorPicker`'s rainbow-ringed well is replaced by `ColorWell` — the same UIKit
   picker (`UIColorPickerViewController`) behind a plain swatch of the actual colour.
+
+## v6 Tilt notes (current)
+
+- Tilt is the GRAVITY integrator with a direction vector instead of a fixed down. It is
+  not a new physics system, which is why it composes with collision for free: letters
+  slide into the low corner and pile up on their letter shapes.
+- **Measured relative to the pose the phone was in when the mode was selected.** Nobody
+  holds a phone flat, so absolute gravity dumps every letter into the bottom of the
+  canvas the instant Tilt is chosen. `TiltSource` captures a reference on start;
+  tapping the Tilt pill again re-levels, and so does Reset.
+- The IN-PLANE part of gravity is the slope of the screen — flat on a table correctly
+  has no downhill at all. Subtracting the reference makes leaning back past the
+  reference read as uphill, which is what makes the control symmetric.
+- No usage description is required: only motion ACTIVITY (the pedometer) asks
+  permission, not the accelerometer or gyroscope. `CMMotionManager` runs ONLY while the
+  mode is selected and the scene is active.
+- Tilt rides in the SAME recording track as touches, sampled every frame rather than
+  throttled. Verified: a replay reproduces a live 3-second wobble with 0.0000pt of
+  drift. A separate track could drift out of step with the touches.
+- Stills export through `CompositionRenderer.render(..., tilt:)`. Rendering at zero
+  would silently drop the parallax and un-swing the light, so the file would differ
+  from the preview — the one thing the canvas contract forbids.
+- Rebuilding a shader resets its uniforms, so `applyShader` pushes the current lean back
+  on. Live that self-corrects on the next reading; a still export renders exactly one
+  frame and would not.
+- Background parallax moves the background NODE (4.5% of the canvas, node oversized so
+  no edge appears), and the glass shader is told the same shift through `u_bg_shift` —
+  otherwise the letters refract a background that is no longer behind them.
+- The collision clamp now uses each glyph's half-extents, not its bounding radius. The
+  bounding radius is half a diagonal, so it held letters further from the edge than the
+  interaction modes did, and the two clamps fought every frame — a corner pile stayed
+  permanently overlapped. Six relaxation passes, and a settled pile still shows ~4pt of
+  contact tolerance, which is what an impulse solver under constant pressure does.
+- `.buttonStyle(.glass)` carries ~23pt of fixed padding per pill and IGNORES
+  `controlSize`, so the icon frame is the only lever on how many controls fit a row.
+  Nine fit at 17pt with a spacer instead of a divider. A tenth has to live elsewhere.

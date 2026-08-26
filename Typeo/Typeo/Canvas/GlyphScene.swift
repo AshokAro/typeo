@@ -17,7 +17,7 @@ import CoreImage
 import simd
 
 enum GlyphInteraction: String, CaseIterable, Identifiable {
-    case none, warp, attract, gravity
+    case none, warp, attract, gravity, tilt
 
     var id: String { rawValue }
 
@@ -27,6 +27,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         case .warp:    "Warp"
         case .attract: "Attract"
         case .gravity: "Gravity"
+        case .tilt:    "Tilt"
         }
     }
 
@@ -36,6 +37,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         case .warp:    "circle.circle"
         case .attract: "hurricane"
         case .gravity: "arrow.up.arrow.down"
+        case .tilt:    "gyroscope"
         }
     }
 
@@ -45,6 +47,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         case .warp:    "Warp"      // negative puckers, positive bloats
         case .attract: "Pull"      // negative pushes away, positive pulls in
         case .gravity: "Gravity"   // negative floats up, positive falls down
+        case .tilt:    "Tilt"      // negative rolls uphill, positive rolls downhill
         }
     }
 
@@ -55,6 +58,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         case .warp:    -1...1
         case .attract: -1...1
         case .gravity: -1...1
+        case .tilt:    -1...1
         }
     }
 
@@ -64,6 +68,7 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
         case .warp:    0
         case .attract: 0
         case .gravity: 0
+        case .tilt:    0
         }
     }
 
@@ -82,6 +87,10 @@ enum GlyphInteraction: String, CaseIterable, Identifiable {
             if value > 0.02 { return "pull \(Int(value * 100))%" }
             if value < -0.02 { return "push \(Int(-value * 100))%" }
             return "still"
+        case .tilt:
+            if value > 0.02 { return "downhill \(Int(value * 100))%" }
+            if value < -0.02 { return "uphill \(Int(-value * 100))%" }
+            return "level"
         case .none:
             return ""
         }
@@ -101,6 +110,17 @@ final class GlyphScene: SKScene {
     /// Letters behave as solid bodies: they push each other out of the way instead of
     /// passing through. Hand-integrated, like every other motion here.
     var collisionsEnabled = false
+
+    /// Which way is downhill, from the device. Set live by the editor and from the
+    /// recorded track during an offscreen render, so a recording reproduces the same
+    /// slide. Zero means the phone is in the pose it was levelled at.
+    var tilt: CGVector = .zero {
+        didSet { applyParallax() }
+    }
+
+    /// How far the background slides against the tilt, as a fraction of the canvas.
+    private let parallaxReach: CGFloat = 0.045
+    private var didReportTilt = false
 
     /// Called when the canvas is tapped with no interaction mode active, so the editor
     /// can move the insertion point. Carries the caret index the tap landed on.
@@ -185,8 +205,11 @@ final class GlyphScene: SKScene {
         addChild(backgroundEffect)
 
         backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
-        backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        // Oversized: the parallax shift would otherwise pull a bare edge into view.
+        backgroundNode.size = CGSize(width: size.width * (1 + parallaxReach * 2.4),
+                                     height: size.height * (1 + parallaxReach * 2.4))
         backgroundEffect.addChild(backgroundNode)
+        applyParallax()
 
         // Glow and heat need a soft field around the letters. One shader pass cannot
         // blur, so the field is a second layer of glyph COPIES under the crisp text,
@@ -288,8 +311,11 @@ final class GlyphScene: SKScene {
         // full rebuild.
         backgroundNode.removeFromParent()
         backgroundNode = BackgroundTextureFactory.node(for: composition.background, size: size)
-        backgroundNode.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        // Oversized: the parallax shift would otherwise pull a bare edge into view.
+        backgroundNode.size = CGSize(width: size.width * (1 + parallaxReach * 2.4),
+                                     height: size.height * (1 + parallaxReach * 2.4))
         backgroundEffect.addChild(backgroundNode)
+        applyParallax()
 
         for glyph in composition.glyphs {
             guard let node = glyphNodes[glyph.id] else { continue }
@@ -366,6 +392,10 @@ final class GlyphScene: SKScene {
         }
         effectNode.shader = shader
         effectNode.shouldEnableEffects = true
+        // A rebuilt shader starts with its uniforms at zero, so the current lean has to
+        // be pushed back onto it. Live it would self-correct on the next reading; a
+        // still export takes exactly one frame and would not.
+        applyParallax()
     }
 
     private func applyField() {
@@ -429,6 +459,7 @@ final class GlyphScene: SKScene {
     /// Deterministic per-frame step. Called by the live scene's update and by the
     /// offscreen frame renderer, so both produce the same animation.
     func advance(to time: TimeInterval) {
+        recordMotionIfNeeded(at: time)
         if interactionStart == nil { interactionStart = time }
         let elapsed = time - (interactionStart ?? time)
         let delta = min(1.0 / 20.0, max(0, time - (lastAdvance ?? time)))
@@ -531,10 +562,87 @@ final class GlyphScene: SKScene {
                 }
                 motion[id] = state
             }
+
+        case .tilt:
+            guard delta > 0, abs(interactionAmount) > 0.01 else { break }
+            // Downhill is wherever the phone says it is, so this is the gravity
+            // integrator with a DIRECTION rather than a fixed straight down.
+            let pull = size.height * CGFloat(interactionAmount) * 2.6
+            let accelX = tilt.dx * pull
+            let accelY = tilt.dy * pull
+            let friction: CGFloat = 0.94
+            let bounce: CGFloat = 0.26
+
+            if !didReportTilt, hypot(tilt.dx, tilt.dy) > 0.05 {
+                didReportTilt = true
+                onInteractionBegan?()
+            }
+
+            for (id, node) in glyphNodes {
+                var state = motion[id] ?? Motion()
+                state.driftX += accelX * delta
+                state.driftY += accelY * delta
+                state.driftX *= friction
+                state.driftY *= friction
+
+                node.position.x += state.driftX * delta
+                node.position.y += state.driftY * delta
+                // A letter sliding across the canvas tumbles a little.
+                node.zRotation += state.driftX * delta * 0.0016
+
+                // All four walls: letters slide sideways here, not only down.
+                let halfWidth = node.size.width * node.xScale / 2
+                let halfHeight = node.size.height * node.yScale / 2
+                let centreX = node.position.x + halfWidth
+                if centreX < halfWidth {
+                    node.position.x += halfWidth - centreX
+                    state.driftX = -state.driftX * bounce
+                } else if centreX > size.width - halfWidth {
+                    node.position.x -= centreX - (size.width - halfWidth)
+                    state.driftX = -state.driftX * bounce
+                }
+                if node.position.y < halfHeight {
+                    node.position.y = halfHeight
+                    state.driftY = -state.driftY * bounce
+                } else if node.position.y > size.height - halfHeight {
+                    node.position.y = size.height - halfHeight
+                    state.driftY = -state.driftY * bounce
+                }
+
+                // Come to rest instead of shivering in the corner.
+                if abs(state.driftX) < size.width * 0.004 { state.driftX = 0 }
+                if abs(state.driftY) < size.height * 0.004 { state.driftY = 0 }
+                motion[id] = state
+            }
         }
 
         resolveCollisions()
         syncFieldNodes()
+    }
+
+    /// The background slides against the tilt, which reads as depth between the type
+    /// and whatever is behind it. The node is oversized so the shift never uncovers an
+    /// edge.
+    private func applyParallax() {
+        let offset = CGPoint(
+            x: -tilt.dx * size.width * parallaxReach,
+            y: -tilt.dy * size.height * parallaxReach
+        )
+        backgroundNode.position = CGPoint(
+            x: size.width / 2 + offset.x,
+            y: size.height / 2 + offset.y
+        )
+        // Glass samples the background as a texture, so it has to be told the same
+        // shift or the letters would refract a background that is no longer there.
+        effectNode.shader?.uniformNamed("u_bg_shift")?.vectorFloat2Value = vector_float2(
+            Float(offset.x / size.width), Float(offset.y / size.height)
+        )
+        // Light direction tracks the tilt, the way a real specular does.
+        for shader in [effectNode.shader, backgroundEffect.shader, fieldEffect.shader] {
+            shader?.uniformNamed("u_tilt")?.vectorFloat2Value = vector_float2(
+                Float(tilt.dx), Float(tilt.dy)
+            )
+        }
     }
 
     // MARK: - Collision
@@ -611,7 +719,10 @@ final class GlyphScene: SKScene {
     private func resolveCollisions() {
         guard collisionsEnabled, orderedIds.count > 1 else { return }
 
-        for _ in 0..<3 {
+        // Six passes, not three: under a constant push — gravity, or a tilt holding
+        // letters against a corner — three left pairs still overlapping, because the
+        // wall clamp shoves them back into each other between passes.
+        for _ in 0..<6 {
             // Placed once per pass and reused across every pair in it.
             let placed = orderedIds.map { worldCircles($0) }
             let centres = orderedIds.map { glyphNodes[$0].map(collisionCentre) ?? .zero }
@@ -645,10 +756,15 @@ final class GlyphScene: SKScene {
         // through the floor the gravity pass had just settled it on.
         for id in orderedIds {
             guard let node = glyphNodes[id] else { continue }
-            let radius = broadRadius(id)
+            // The glyph's own half-extents, NOT its bounding radius. The bounding
+            // radius is half a diagonal, which held letters much further from the edge
+            // than the interaction modes do — the two clamps then fought each frame and
+            // left a corner pile permanently overlapping.
+            let halfWidth = node.size.width * node.xScale / 2
+            let halfHeight = node.size.height * node.yScale / 2
             let centre = collisionCentre(node)
-            let clampedX = min(max(centre.x, radius), size.width - radius)
-            let clampedY = min(max(centre.y, radius), size.height - radius)
+            let clampedX = min(max(centre.x, halfWidth), size.width - halfWidth)
+            let clampedY = min(max(centre.y, halfHeight), size.height - halfHeight)
             if clampedX != centre.x {
                 node.position.x += clampedX - centre.x
                 motion[id]?.driftX = 0
@@ -677,6 +793,7 @@ final class GlyphScene: SKScene {
     }
 
     private func resetMotion() {
+        didReportTilt = false
         motion.removeAll()
         interactionStart = nil
         lastAdvance = nil
@@ -725,6 +842,18 @@ final class GlyphScene: SKScene {
         return count
     }
 
+    /// How deeply the worst-overlapping pair is interpenetrating, in points.
+    var debugDeepestOverlap: CGFloat {
+        let placed = orderedIds.map { worldCircles($0) }
+        var worst: CGFloat = 0
+        for i in 0..<max(0, orderedIds.count - 1) {
+            for j in (i + 1)..<orderedIds.count {
+                worst = max(worst, deepestOverlap(placed[i], placed[j])?.depth ?? 0)
+            }
+        }
+        return worst
+    }
+
     var debugShapeCircleCounts: [Int] {
         orderedIds.map { glyphShapes[$0]?.count ?? 0 }
     }
@@ -750,7 +879,7 @@ final class GlyphScene: SKScene {
         isHolding = false
         touchPoint = nil
         touchDownPoint = nil
-        if !isLocked, interaction != .gravity { springBack() }
+        if !isLocked, interaction != .gravity, interaction != .tilt { springBack() }
     }
 
     // MARK: - Touch recording (v6 video)
@@ -765,6 +894,10 @@ final class GlyphScene: SKScene {
         var time: TimeInterval
         var point: CGPoint?
         var holding: Bool
+        /// Tilt travels in the SAME track as the touches. A recording has to reproduce
+        /// what the phone was doing as well as what the finger was doing, and one track
+        /// cannot drift out of step with itself.
+        var tilt: CGVector = .zero
     }
 
     private(set) var touchTrack: [TouchSample] = []
@@ -783,7 +916,18 @@ final class GlyphScene: SKScene {
     private func recordTouch() {
         guard let start = touchRecordingStart, let last = lastAdvance else { return }
         touchTrack.append(
-            TouchSample(time: last - start, point: touchPoint, holding: isHolding)
+            TouchSample(time: last - start, point: touchPoint, holding: isHolding, tilt: tilt)
+        )
+    }
+
+    /// Tilt arrives without a touch, so a recording of it has to be sampled on the
+    /// clock instead. Every frame, not throttled: a sampling gap is a place where the
+    /// replay can diverge from what was on screen, and four seconds of samples is a few
+    /// hundred structs.
+    private func recordMotionIfNeeded(at time: TimeInterval) {
+        guard interaction == .tilt, let start = touchRecordingStart else { return }
+        touchTrack.append(
+            TouchSample(time: time - start, point: touchPoint, holding: isHolding, tilt: tilt)
         )
     }
 
@@ -794,6 +938,7 @@ final class GlyphScene: SKScene {
         for sample in track where sample.time <= time { chosen = sample }
         touchPoint = chosen.point
         isHolding = chosen.holding
+        tilt = chosen.tilt
     }
 
     // MARK: - Caret
@@ -919,7 +1064,7 @@ final class GlyphScene: SKScene {
             return
         }
         // Locked keeps whatever the letters are doing; unlocked settles them back.
-        if !isLocked, interaction != .gravity { springBack() }
+        if !isLocked, interaction != .gravity, interaction != .tilt { springBack() }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {

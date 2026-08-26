@@ -24,7 +24,12 @@ enum SpriteCompositionRenderer {
     /// - Parameters:
     ///   - time: scene time, so animated shaders can be frozen at a chosen frame.
     ///   - scale: 1 renders at reference size (1080 wide), 2 at 2160.
-    static func render(_ composition: Composition, time: Double = 0, scale: CGFloat = 2) -> UIImage? {
+    static func render(
+        _ composition: Composition,
+        time: Double = 0,
+        scale: CGFloat = 2,
+        tilt: CGVector = .zero
+    ) -> UIImage? {
         let reference = composition.aspectRatio.referenceSize
         let width = Int(reference.width * scale)
         let height = Int(reference.height * scale)
@@ -35,6 +40,7 @@ enum SpriteCompositionRenderer {
 
         let scene = GlyphScene(composition: composition, size: reference)
         scene.rebuild()
+        scene.tilt = tilt
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false

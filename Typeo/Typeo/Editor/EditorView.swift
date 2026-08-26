@@ -22,6 +22,8 @@ struct EditorView: View {
     @State private var isRecordingSheetUp = false
     @State private var isLocked = false
     @State private var collisionsOn = false
+    @State private var tiltSource = TiltSource()
+    @Environment(\.scenePhase) private var scenePhase
     /// Which detent the open sheet is sitting at, so the canvas knows how much room
     /// it actually has above it.
     @State private var sheetDetent: PresentationDetent = Self.shortSheet
@@ -139,7 +141,20 @@ struct EditorView: View {
         }
         .onChange(of: interaction) { _, mode in
             if mode != .none { isEditing = false }
+            // The sensor runs ONLY while the mode is selected. Device motion at 60Hz
+            // is not something to leave on in the background.
+            if mode == .tilt {
+                tiltSource.onUpdate = { [scene] vector in scene.tilt = vector }
+                tiltSource.start()
+            } else {
+                tiltSource.stop()
+            }
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, interaction == .tilt { tiltSource.start() }
+            else { tiltSource.stop() }
+        }
+        .onDisappear { tiltSource.stop() }
         .onChange(of: isLocked) { _, locked in
             scene.isLocked = locked
         }
@@ -261,7 +276,7 @@ struct EditorView: View {
         // HStack squeezed the modes into a narrower scroll view than their own
         // content, and the shuffle pill was clipped away entirely.
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
+            HStack(spacing: 3) {
                 ForEach(GlyphInteraction.allCases) { mode in
                     InteractionButton(mode: mode, isSelected: isSelected(mode)) {
                         select(mode)
@@ -275,7 +290,9 @@ struct EditorView: View {
                 }
                 .disabled(store.composition.isEmpty)
 
-                Divider().frame(height: 20).overlay(Color.white.opacity(0.2))
+                // A gap instead of a divider: the rule cost more width than the space
+                // it was standing in.
+                Spacer(minLength: 8)
 
                 // Was on the floating rail. A toggle belongs with the modes it holds
                 // in place, and the rail was covering the canvas to say so.
@@ -299,19 +316,20 @@ struct EditorView: View {
                 Button { resetLetters() } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 20, height: 24)
+                        .frame(width: 17, height: 24)
                 }
                 .buttonStyle(.glass)
                 .disabled(!canReset)
                 .accessibilityLabel("Reset letters")
             }
-            // Small control size: eight pills at the default size ran a long way past
-            // the screen, and Reset was the one pushed off.
+            // .glass carries a fixed ~23pt of padding per pill and ignores controlSize,
+            // so the ICON frame is the only lever on how many fit. Nine is the limit at
+            // 17pt; a tenth control has to go somewhere else.
             .controlSize(.small)
             // Vertical room so a pressed pill's glass is not sliced off, and the row
             // runs edge to edge instead of stopping at the page margin.
             .padding(.vertical, 8)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 14)
         }
         .scrollClipDisabled()
     }
@@ -323,6 +341,9 @@ struct EditorView: View {
 
     private func select(_ mode: GlyphInteraction) {
         store.endLiveJumble()
+        // Tapping Tilt again re-levels to however the phone is being held now, which is
+        // the only recovery if you started in an awkward pose.
+        if mode == .tilt, interaction == .tilt { tiltSource.recalibrate() }
         interaction = mode
         withAnimation(.snappy(duration: 0.2)) {
             expandedSlider = mode == .none ? nil : .interaction(mode)
@@ -348,6 +369,7 @@ struct EditorView: View {
 
     private func resetLetters() {
         store.endLiveJumble()
+        tiltSource.recalibrate()
         store.unjumble()
         scene.reset()
         jumbleAmount = 0
@@ -570,7 +592,9 @@ struct EditorView: View {
     private func prepareExport() {
         isEditing = false
         captureSceneTransforms()
-        guard let image = CompositionRenderer.render(store.composition, time: 0, scale: 2) else { return }
+        guard let image = CompositionRenderer.render(
+            store.composition, time: 0, scale: 2, tilt: scene.tilt
+        ) else { return }
         exportImage = image
         isExporting = true
     }
@@ -633,7 +657,7 @@ struct ToggleButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
-                .frame(width: 20, height: 24)
+                .frame(width: 17, height: 24)
         }
         .accessibilityLabel(label)
     }
@@ -656,7 +680,7 @@ private struct InteractionButton: View {
             Label(mode.label, systemImage: mode.systemImage)
                 .font(.system(size: 12, weight: .semibold))
                 .labelStyle(.iconOnly)
-                .frame(width: 20, height: 24)
+                .frame(width: 17, height: 24)
         }
         .accessibilityLabel(mode.label)
     }
@@ -675,7 +699,7 @@ private struct ShuffleButton: View {
         Button(action: action) {
             Image(systemName: "shuffle")
                 .font(.system(size: 14, weight: .semibold))
-                .frame(width: 20, height: 24)
+                .frame(width: 17, height: 24)
         }
         .accessibilityLabel("Shuffle letters")
     }
