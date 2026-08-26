@@ -10,12 +10,17 @@ import SwiftUI
 
 struct EditorView: View {
     let store: CompositionStore
+    let library: CompositionLibrary
 
     @FocusState private var isTyping: Bool
     @State private var showFontPicker = false
     @State private var showStylePanel = false
     @State private var exportImage: UIImage?
     @State private var isExporting = false
+    /// One clock shared by the live canvas and the exporter, so the exported frame
+    /// is the frame that was on screen when Export was tapped.
+    @State private var animationStart = Date()
+    @State private var didSave = false
 
     private var textBinding: Binding<String> {
         Binding(get: { store.text }, set: { store.text = $0 })
@@ -29,7 +34,8 @@ struct EditorView: View {
                 ZStack {
                     CanvasStage(
                         composition: store.composition,
-                        availableSize: proxy.size
+                        availableSize: proxy.size,
+                        animationStart: animationStart
                     )
                     if store.composition.isEmpty {
                         emptyHint
@@ -75,6 +81,27 @@ struct EditorView: View {
                 }
 
                 Spacer(minLength: 8)
+
+                Button {
+                    store.newComposition()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 28, height: 26)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("New composition")
+
+                Button {
+                    saveToLibrary()
+                } label: {
+                    Image(systemName: didSave ? "checkmark" : "square.and.arrow.down")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 28, height: 26)
+                }
+                .buttonStyle(.glass)
+                .disabled(store.composition.isEmpty)
+                .accessibilityLabel("Save to gallery")
 
                 Button {
                     prepareExport()
@@ -157,9 +184,19 @@ struct EditorView: View {
         FontCatalog.option(matching: store.style.font)?.displayName ?? "Font"
     }
 
+    private func saveToLibrary() {
+        guard library.save(store.composition) else { return }
+        withAnimation(.snappy) { didSave = true }
+        Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            withAnimation(.snappy) { didSave = false }
+        }
+    }
+
     private func prepareExport() {
         isTyping = false
-        guard let image = CompositionRenderer.render(store.composition, scale: 2) else { return }
+        let time = Date().timeIntervalSince(animationStart)
+        guard let image = CompositionRenderer.render(store.composition, time: time, scale: 2) else { return }
         exportImage = image
         isExporting = true
     }

@@ -44,11 +44,11 @@ only what happens in between.
 
 ## Version boundaries — stay inside the current one
 
-- **v1 (MVP)**: type -> curated font list -> single color + one Core Image filter ->
+- **v1 (DONE)**: type -> curated font list -> single color + one Core Image filter ->
   3 aspect ratios -> export image -> Photos + share sheet.
   EXCLUDED: multiple shaders, per-letter anything, video, widget, gallery/persistence, accounts.
-- **v2**: full shader set (heat, noise, glitch) via `.layerEffect`/Core Image on the whole
-  text block. In-app gallery with local persistence of `Composition`.
+- **v2** (DONE): full shader set (bloom, heat, noise, glitch) as Metal shaders on the
+  text block. In-app gallery with local persistence of `Composition` as JSON.
   EXCLUDED: per-letter divergence, video, widget.
 - **v3**: rebuild canvas as individually addressable glyph nodes (SpriteKit). Per-letter
   jumbling. Tap-and-hold effects: inflate, float, gravity/drop. Biggest single lift.
@@ -76,8 +76,15 @@ only what happens in between.
 - The canvas lays out at a fixed reference size per aspect ratio (1080x1080, 1080x1920,
   1920x1080) and is scaled down for on-screen display. Preview and export therefore run the
   SAME view at the SAME logical size — WYSIWYG is structural, not maintained by hand.
-- Any Core Image / shader effect is applied to the rendered canvas image, by the same
-  renderer the export uses. Never approximate the effect live and filter only on export.
+- Shaders are SwiftUI modifiers (`.colorEffect` / `.distortionEffect` / `.layerEffect`)
+  applied to the TEXT BLOCK, never the background and never the chrome. `ImageRenderer`
+  captures all three modifier types (verified), so the live canvas and the exported file
+  run the same modifier. Never approximate an effect live and filter only on export.
+- Animated shaders read a `time` value passed into `CompositionCanvas`, not stored on
+  `Composition`. The editor drives it from one clock shared with the exporter, so an
+  exported frame is the frame that was on screen. v4's video export is this same call
+  in a loop over `time`.
+- Metal shaders need the Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`.
 - Export renders via `ImageRenderer` (SwiftUI) at the target aspect ratio and scale.
 - Photos save requires `NSPhotoLibraryAddUsageDescription` in Info.plist.
 - Bundled fonts must be OFL/licence-checked and declared in Info.plist under

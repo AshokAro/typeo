@@ -48,6 +48,9 @@ struct GlyphView: View {
 
 struct CompositionCanvas: View {
     let composition: Composition
+    /// Seconds on the editor's animation clock. Animated shaders read this; static
+    /// ones ignore it. Export passes the clock value at the moment of export.
+    var time: Double = 0
 
     /// Fraction of canvas width the text block may occupy.
     private let textInset: CGFloat = 0.88
@@ -55,6 +58,7 @@ struct CompositionCanvas: View {
     var body: some View {
         let reference = composition.aspectRatio.referenceSize
         let dominant = composition.dominantSize
+        let bleed = composition.globalShader.kind.sampleOffset
 
         ZStack {
             BackgroundView(background: composition.background)
@@ -68,6 +72,9 @@ struct CompositionCanvas: View {
                 }
             }
             .frame(maxWidth: reference.width * textInset)
+            // Bleed room so a glow or a tear is not clipped at the block's edge.
+            .padding(bleed)
+            .modifier(TextBlockShader(effect: composition.globalShader, time: time))
         }
         .frame(width: reference.width, height: reference.height)
         .clipped()

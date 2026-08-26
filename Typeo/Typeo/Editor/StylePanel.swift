@@ -40,7 +40,6 @@ struct StylePanel: View {
                             Text(kind.label).tag(kind)
                         }
                     }
-                    .pickerStyle(.segmented)
 
                     if store.composition.globalShader.kind != .none {
                         VStack(alignment: .leading, spacing: 6) {

@@ -118,20 +118,44 @@ struct GlyphFont: Codable, Hashable {
 
 // MARK: - Effect
 
-/// v1 ships exactly one effect (`bloom`). v2 adds heat / noise / glitch as further
-/// cases — additive, no reshaping.
+/// v1 shipped `bloom` alone. v2 adds heat / noise / glitch — purely additive cases,
+/// no reshaping of the model.
 struct ShaderEffect: Codable, Hashable {
     var kind: Kind
     var intensity: Double
 
     enum Kind: String, Codable, CaseIterable, Identifiable, Hashable {
-        case none, bloom
+        case none, bloom, heat, noise, glitch
 
         var id: String { rawValue }
+
         var label: String {
             switch self {
-            case .none:  "None"
-            case .bloom: "Bloom"
+            case .none:   "None"
+            case .bloom:  "Bloom"
+            case .heat:   "Heat"
+            case .noise:  "Noise"
+            case .glitch: "Glitch"
+            }
+        }
+
+        /// Whether the shader reads `time` and therefore needs a running clock.
+        var isAnimated: Bool {
+            switch self {
+            case .none, .bloom:        false
+            case .heat, .noise, .glitch: true
+            }
+        }
+
+        /// How far the shader may sample outside a pixel. Also sets how much bleed
+        /// room the text block is padded with, so the effect is not clipped.
+        var sampleOffset: CGFloat {
+            switch self {
+            case .none:   0
+            case .bloom:  60
+            case .heat:   60
+            case .noise:  0
+            case .glitch: 130
             }
         }
     }
@@ -192,6 +216,22 @@ struct Composition: Identifiable, Codable, Hashable {
     var background: Background = .defaultBackground
     var globalShader: ShaderEffect = .none
     var glyphs: [Glyph] = []
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = .now,
+        aspectRatio: AspectRatio = .square,
+        background: Background = .defaultBackground,
+        globalShader: ShaderEffect = .none,
+        glyphs: [Glyph] = []
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.aspectRatio = aspectRatio
+        self.background = background
+        self.globalShader = globalShader
+        self.glyphs = glyphs
+    }
 
     var text: String { glyphs.map(\.character).joined() }
     var isEmpty: Bool { glyphs.isEmpty }

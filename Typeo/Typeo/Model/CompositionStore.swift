@@ -87,6 +87,23 @@ final class CompositionStore {
         mutateAllGlyphs { $0.color = color }
     }
 
+    /// Reopens a saved composition for further editing. Derives the v1/v2 single
+    /// style from the first glyph so the style panel reflects what is on screen.
+    func load(_ composition: Composition) {
+        self.composition = composition
+        if let first = composition.glyphs.first {
+            style = GlyphStyle(font: first.font, size: first.size, color: first.color)
+        }
+    }
+
+    /// Starts a fresh composition, keeping the current style as the starting point.
+    func newComposition() {
+        composition = Composition(
+            aspectRatio: composition.aspectRatio,
+            background: composition.background
+        )
+    }
+
     // MARK: Composition-level
 
     func setAspectRatio(_ ratio: AspectRatio) {
